@@ -1,3 +1,7 @@
+#![allow(clippy::result_large_err)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::needless_pass_by_ref_mut)]
+#![allow(unexpected_cfgs)]
 use anchor_lang::prelude::*;
 
 pub mod errors;

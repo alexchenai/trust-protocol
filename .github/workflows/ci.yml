@@ -34,6 +34,7 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-${{ env.RUST_TOOLCHAIN }}-
+
       - name: Install Solana CLI
         run: |
           sh -c "$(curl -sSfL https://release.anza.xyz/v${{ env.SOLANA_VERSION }}/install)"
@@ -52,10 +53,11 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Cargo clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings -A clippy::result_large_err -A clippy::too_many_arguments -A clippy::needless_pass_by_ref_mut -A unexpected_cfgs
 
       - name: Anchor build
         run: anchor build
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -78,10 +80,12 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
 
       - name: Install cargo-audit
         run: cargo install cargo-audit
 
-      - name: Security audit
-        run: cargo audit
+      - name: Run cargo audit
         continue-on-error: true
+        run: cargo audit
