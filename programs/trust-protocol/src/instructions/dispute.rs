@@ -140,45 +140,37 @@ pub fn handler_vote(ctx: Context<JuryVote>, vote_for_provider: bool) -> Result<(
 /// Whitepaper: Confiscated stakes -> 15% burned, 60% insurance pool, 25% to winner.
 /// Fraud: complete capital confiscation + permanent TrustScore reset + ban.
 pub fn handler_resolve(ctx: Context<ResolveDispute>, provider_wins: bool) -> Result<()> {
-    let dispute = &mut ctx.accounts.dispute;
-    let contract = &mut ctx.accounts.contract;
-    let config = &ctx.accounts.protocol_config;
+    // Determine final outcome (jury overrides manual input for jury levels)
+    let final_provider_wins = {
+        let dispute = &ctx.accounts.dispute;
+        if dispute.level == DisputeLevel::PublicJury || dispute.level == DisputeLevel::Appeal {
+            let total_votes = dispute.votes_provider.saturating_add(dispute.votes_requester);
+            require!(total_votes > 0, TrustError::InvalidContractStatus);
+            dispute.votes_provider > dispute.votes_requester
+        } else {
+            provider_wins
+        }
+    };
 
-    // For jury levels, check vote tally
-    if dispute.level == DisputeLevel::PublicJury || dispute.level == DisputeLevel::Appeal {
-        let total_votes = dispute.votes_provider.saturating_add(dispute.votes_requester);
-        require!(total_votes > 0, TrustError::InvalidContractStatus);
-        // Override with jury result
-        let jury_provider_wins = dispute.votes_provider > dispute.votes_requester;
-        return resolve_with_outcome(ctx, dispute, contract, config, jury_provider_wins);
-    }
-
-    // For Direct/Private levels, admin or mutual agreement resolves
-    resolve_with_outcome(ctx, dispute, contract, config, provider_wins)
-}
-
-fn resolve_with_outcome(
-    ctx: Context<ResolveDispute>,
-    dispute: &mut Dispute,
-    contract: &mut Contract,
-    config: &ProtocolConfig,
-    provider_wins: bool,
-) -> Result<()> {
     let now = Clock::get()?.unix_timestamp;
-    dispute.resolved_at = now;
-    contract.resolved_at = now;
+    ctx.accounts.dispute.resolved_at = now;
+    ctx.accounts.contract.resolved_at = now;
 
-    if provider_wins {
-        dispute.status = DisputeStatus::ResolvedProvider;
-        contract.status = ContractStatus::ResolvedProvider;
+    // Save values we need before multiple borrows
+    let contract_id_bytes = ctx.accounts.contract.id.to_le_bytes();
+    let escrow_bump = ctx.bumps.escrow_vault;
+    let escrow_seeds: &[&[u8]] = &[b"escrow", &contract_id_bytes, &[escrow_bump]];
+    let signer_seeds = &[escrow_seeds];
+
+    if final_provider_wins {
+        ctx.accounts.dispute.status = DisputeStatus::ResolvedProvider;
+        ctx.accounts.contract.status = ContractStatus::ResolvedProvider;
 
         // Provider gets payment + stake back (same as accept)
-        let total = contract.value.checked_add(contract.provider_stake).ok_or(TrustError::MathOverflow)?;
-        let escrow_seeds = &[
-            b"escrow".as_ref(),
-            &contract.id.to_le_bytes(),
-            &[ctx.bumps.escrow_vault],
-        ];
+        let total = ctx.accounts.contract.value
+            .checked_add(ctx.accounts.contract.provider_stake)
+            .ok_or(TrustError::MathOverflow)?;
+
         let transfer_ctx = CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
             Transfer {
@@ -186,41 +178,38 @@ fn resolve_with_outcome(
                 to: ctx.accounts.provider_token_account.to_account_info(),
                 authority: ctx.accounts.escrow_vault.to_account_info(),
             },
-            &[escrow_seeds],
+            signer_seeds,
         );
         token::transfer(transfer_ctx, total)?;
 
         // Update requester stats (lost dispute)
-        let requester_identity = &mut ctx.accounts.requester_identity;
-        requester_identity.disputes_lost = requester_identity.disputes_lost.saturating_add(1);
+        ctx.accounts.requester_identity.disputes_lost =
+            ctx.accounts.requester_identity.disputes_lost.saturating_add(1);
 
         // Update provider stats (won dispute)
-        let provider_identity = &mut ctx.accounts.provider_identity;
-        provider_identity.disputes_won = provider_identity.disputes_won.saturating_add(1);
+        ctx.accounts.provider_identity.disputes_won =
+            ctx.accounts.provider_identity.disputes_won.saturating_add(1);
 
         msg!("Dispute resolved: PROVIDER wins. {} SWORN released.", total);
     } else {
-        dispute.status = DisputeStatus::ResolvedRequester;
-        contract.status = ContractStatus::ResolvedRequester;
+        ctx.accounts.dispute.status = DisputeStatus::ResolvedRequester;
+        ctx.accounts.contract.status = ContractStatus::ResolvedRequester;
 
         // Confiscate provider's stake
-        let confiscated = contract.provider_stake;
+        let confiscated = ctx.accounts.contract.provider_stake;
+        let contract_value = ctx.accounts.contract.value;
 
         // 15% burned (deflationary)
-        let burn_amount = (confiscated as u128 * config.burn_rate_bps as u128 / 10_000) as u64;
+        let burn_rate_bps = ctx.accounts.protocol_config.burn_rate_bps;
+        let insurance_rate_bps = ctx.accounts.protocol_config.insurance_rate_bps;
+        let burn_amount = (confiscated as u128 * burn_rate_bps as u128 / 10_000) as u64;
         // 60% to insurance pool
-        let insurance_amount = (confiscated as u128 * config.insurance_rate_bps as u128 / 10_000) as u64;
+        let insurance_amount = (confiscated as u128 * insurance_rate_bps as u128 / 10_000) as u64;
         // 25% to requester (winner)
         let winner_amount = confiscated.saturating_sub(burn_amount).saturating_sub(insurance_amount);
 
-        let escrow_seeds = &[
-            b"escrow".as_ref(),
-            &contract.id.to_le_bytes(),
-            &[ctx.bumps.escrow_vault],
-        ];
-
         // Return contract value to requester
-        let refund = contract.value.checked_add(winner_amount).ok_or(TrustError::MathOverflow)?;
+        let refund = contract_value.checked_add(winner_amount).ok_or(TrustError::MathOverflow)?;
         let transfer_ctx = CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
             Transfer {
@@ -228,7 +217,7 @@ fn resolve_with_outcome(
                 to: ctx.accounts.requester_token_account.to_account_info(),
                 authority: ctx.accounts.escrow_vault.to_account_info(),
             },
-            &[escrow_seeds],
+            signer_seeds,
         );
         token::transfer(transfer_ctx, refund)?;
 
@@ -241,12 +230,12 @@ fn resolve_with_outcome(
                     to: ctx.accounts.insurance_vault.to_account_info(),
                     authority: ctx.accounts.escrow_vault.to_account_info(),
                 },
-                &[escrow_seeds],
+                signer_seeds,
             );
             token::transfer(transfer_ctx, insurance_amount)?;
 
-            let pool = &mut ctx.accounts.insurance_pool;
-            pool.total_balance = pool.total_balance.saturating_add(insurance_amount);
+            ctx.accounts.insurance_pool.total_balance =
+                ctx.accounts.insurance_pool.total_balance.saturating_add(insurance_amount);
         }
 
         // Burn tokens (15% deflationary mechanic)
@@ -258,18 +247,18 @@ fn resolve_with_outcome(
                     from: ctx.accounts.escrow_vault.to_account_info(),
                     authority: ctx.accounts.escrow_vault.to_account_info(),
                 },
-                &[escrow_seeds],
+                signer_seeds,
             );
             token::burn(burn_ctx, burn_amount)?;
         }
 
         // Update provider stats (lost dispute)
-        let provider_identity = &mut ctx.accounts.provider_identity;
-        provider_identity.disputes_lost = provider_identity.disputes_lost.saturating_add(1);
+        ctx.accounts.provider_identity.disputes_lost =
+            ctx.accounts.provider_identity.disputes_lost.saturating_add(1);
 
         // Update requester stats (won dispute)
-        let requester_identity = &mut ctx.accounts.requester_identity;
-        requester_identity.disputes_won = requester_identity.disputes_won.saturating_add(1);
+        ctx.accounts.requester_identity.disputes_won =
+            ctx.accounts.requester_identity.disputes_won.saturating_add(1);
 
         msg!(
             "Dispute resolved: REQUESTER wins. Confiscated: {}. Burned: {}, Insurance: {}, Winner: {}",

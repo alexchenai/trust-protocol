@@ -140,12 +140,14 @@ pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
 
     // Release escrow: payment to provider, stake back to provider
     let total_release = contract.value.checked_add(contract.provider_stake).ok_or(TrustError::MathOverflow)?;
-    let escrow_seeds = &[
-        b"escrow".as_ref(),
-        &contract.id.to_le_bytes(),
-        &[ctx.bumps.escrow_vault],
+    let contract_id_bytes = contract.id.to_le_bytes();
+    let escrow_bump = ctx.bumps.escrow_vault;
+    let escrow_seeds: &[&[u8]] = &[
+        b"escrow",
+        &contract_id_bytes,
+        &[escrow_bump],
     ];
-    let signer_seeds = &[&escrow_seeds[..]];
+    let signer_seeds = &[escrow_seeds];
 
     let transfer_ctx = CpiContext::new_with_signer(
         ctx.accounts.token_program.to_account_info(),

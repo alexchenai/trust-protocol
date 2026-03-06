@@ -83,10 +83,9 @@ pub fn handler_approve_claim(ctx: Context<ApproveInsuranceClaim>) -> Result<()> 
     let payout = claim.amount.min(pool.total_balance);
 
     // Transfer payout from insurance vault to claimant
-    let pool_seeds = &[
-        b"pool-authority".as_ref(),
-        &[ctx.bumps.pool_authority],
-    ];
+    let pool_bump = ctx.bumps.pool_authority;
+    let pool_seeds: &[&[u8]] = &[b"pool-authority", &[pool_bump]];
+    let signer_seeds = &[pool_seeds];
     let transfer_ctx = CpiContext::new_with_signer(
         ctx.accounts.token_program.to_account_info(),
         Transfer {
@@ -94,7 +93,7 @@ pub fn handler_approve_claim(ctx: Context<ApproveInsuranceClaim>) -> Result<()> 
             to: ctx.accounts.claimant_token_account.to_account_info(),
             authority: ctx.accounts.pool_authority.to_account_info(),
         },
-        &[pool_seeds],
+        signer_seeds,
     );
     token::transfer(transfer_ctx, payout)?;
 
@@ -106,7 +105,7 @@ pub fn handler_approve_claim(ctx: Context<ApproveInsuranceClaim>) -> Result<()> 
             to: ctx.accounts.claimant_token_account.to_account_info(),
             authority: ctx.accounts.pool_authority.to_account_info(),
         },
-        &[pool_seeds],
+        signer_seeds,
     );
     token::transfer(collateral_transfer, claim.collateral)?;
 
