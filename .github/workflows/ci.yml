@@ -56,8 +56,6 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings -A clippy::result_large_err -A clippy::too_many_arguments -A clippy::needless_pass_by_ref_mut -A unexpected_cfgs
 
       - name: Anchor build
-        env:
-          CARGO_UNSTABLE_EDITION_2024: true
         run: anchor build
 
       - name: Setup Node.js
