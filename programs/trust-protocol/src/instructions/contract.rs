@@ -1,7 +1,7 @@
 use crate::errors::TrustError;
 use crate::state::*;
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Burn, Token, TokenAccount, Transfer};
+use anchor_spl::token::{self, Token, TokenAccount, Transfer};
 
 /// Calculate stake factor based on TrustScore.
 /// Whitepaper: factor_stake decreases linearly from 100% (score 0) to 5% (score 100).

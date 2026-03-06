@@ -1,4 +1,3 @@
-use crate::errors::TrustError;
 use crate::state::*;
 use anchor_lang::prelude::*;
 use anchor_spl::token::{Mint, Token};
