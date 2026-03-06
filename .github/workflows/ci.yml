@@ -8,7 +8,7 @@ on:
 
 env:
   SOLANA_VERSION: "3.0.14"
-  ANCHOR_VERSION: "0.30.1"
+  ANCHOR_VERSION: "0.31.1"
   RUST_TOOLCHAIN: "stable"
 
 jobs:
