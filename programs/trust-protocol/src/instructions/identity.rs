@@ -1,7 +1,7 @@
+use crate::errors::TrustError;
+use crate::state::*;
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Token, TokenAccount, Transfer};
-use crate::state::*;
-use crate::errors::TrustError;
 
 /// Register a new agent identity with a SWORN identity bond (2-5 tokens).
 /// Identity is soulbound (non-transferable) and requires 30-day maturation.
@@ -45,7 +45,10 @@ pub fn handler_register(ctx: Context<RegisterAgent>, bond_amount: u64) -> Result
 
     // Increment global agent counter
     let config = &mut ctx.accounts.protocol_config;
-    config.total_agents = config.total_agents.checked_add(1).ok_or(TrustError::MathOverflow)?;
+    config.total_agents = config
+        .total_agents
+        .checked_add(1)
+        .ok_or(TrustError::MathOverflow)?;
 
     msg!(
         "Agent registered: {}. Bond: {} SWORN lamports. DID: did:trust:{}",
@@ -62,7 +65,10 @@ pub fn handler_sponsor(ctx: Context<SponsorAgent>, bonus_points: u16) -> Result<
     let sponsor = &ctx.accounts.sponsor_identity;
     require!(!sponsor.banned, TrustError::AgentBanned);
     require!(sponsor.matured, TrustError::IdentityNotMatured);
-    require!(sponsor.trust_score >= 50, TrustError::InsufficientJuryReputation);
+    require!(
+        sponsor.trust_score >= 50,
+        TrustError::InsufficientJuryReputation
+    );
 
     // Cap sponsor bonus at 10 points
     let capped = bonus_points.min(10);

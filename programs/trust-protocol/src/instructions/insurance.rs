@@ -1,7 +1,7 @@
+use crate::errors::TrustError;
+use crate::state::*;
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Token, TokenAccount, Transfer};
-use crate::state::*;
-use crate::errors::TrustError;
 
 /// File a retroactive insurance claim within 90 days of contract completion.
 /// Whitepaper Section 6: Insurance Pool - requester discovers defect post-acceptance.
@@ -16,11 +16,20 @@ pub fn handler_file_claim(
     let now = Clock::get()?.unix_timestamp;
 
     // Must be a completed contract
-    require!(contract.status == ContractStatus::Completed, TrustError::InvalidContractStatus);
-    require!(contract.requester == ctx.accounts.claimant.key(), TrustError::UnauthorizedRequester);
+    require!(
+        contract.status == ContractStatus::Completed,
+        TrustError::InvalidContractStatus
+    );
+    require!(
+        contract.requester == ctx.accounts.claimant.key(),
+        TrustError::UnauthorizedRequester
+    );
 
     // Check 90-day claim window
-    let window_end = contract.resolved_at.checked_add(config.claim_window).ok_or(TrustError::MathOverflow)?;
+    let window_end = contract
+        .resolved_at
+        .checked_add(config.claim_window)
+        .ok_or(TrustError::MathOverflow)?;
     require!(now <= window_end, TrustError::ClaimWindowExpired);
 
     // Max claim: 80% of contract value
@@ -59,7 +68,9 @@ pub fn handler_file_claim(
 
     msg!(
         "Insurance claim filed. Amount: {}, Collateral: {}. Window closes: {}",
-        amount, collateral, window_end
+        amount,
+        collateral,
+        window_end
     );
     Ok(())
 }
@@ -71,11 +82,17 @@ pub fn handler_approve_claim(ctx: Context<ApproveInsuranceClaim>) -> Result<()> 
 
     // Phase 0-2: only admin can approve
     if config.governance_phase < 3 {
-        require!(ctx.accounts.admin.key() == config.admin, TrustError::UnauthorizedAdmin);
+        require!(
+            ctx.accounts.admin.key() == config.admin,
+            TrustError::UnauthorizedAdmin
+        );
     }
 
     let claim = &mut ctx.accounts.insurance_claim;
-    require!(claim.status == ClaimStatus::Filed || claim.status == ClaimStatus::UnderReview, TrustError::InvalidContractStatus);
+    require!(
+        claim.status == ClaimStatus::Filed || claim.status == ClaimStatus::UnderReview,
+        TrustError::InvalidContractStatus
+    );
 
     claim.status = ClaimStatus::Approved;
 
@@ -117,7 +134,11 @@ pub fn handler_approve_claim(ctx: Context<ApproveInsuranceClaim>) -> Result<()> 
     let provider_identity = &mut ctx.accounts.provider_identity;
     provider_identity.fraud_flags = provider_identity.fraud_flags.saturating_add(1);
 
-    msg!("Insurance claim approved. Payout: {}, Collateral returned: {}", payout, claim.collateral);
+    msg!(
+        "Insurance claim approved. Payout: {}, Collateral returned: {}",
+        payout,
+        claim.collateral
+    );
     Ok(())
 }
 
@@ -125,7 +146,10 @@ pub fn handler_approve_claim(ctx: Context<ApproveInsuranceClaim>) -> Result<()> 
 pub fn handler_deny_claim(ctx: Context<ApproveInsuranceClaim>) -> Result<()> {
     let config = &ctx.accounts.protocol_config;
     if config.governance_phase < 3 {
-        require!(ctx.accounts.admin.key() == config.admin, TrustError::UnauthorizedAdmin);
+        require!(
+            ctx.accounts.admin.key() == config.admin,
+            TrustError::UnauthorizedAdmin
+        );
     }
 
     let claim = &mut ctx.accounts.insurance_claim;
@@ -136,7 +160,10 @@ pub fn handler_deny_claim(ctx: Context<ApproveInsuranceClaim>) -> Result<()> {
     pool.total_balance = pool.total_balance.saturating_add(claim.collateral);
     pool.active_claims = pool.active_claims.saturating_sub(1);
 
-    msg!("Insurance claim denied. Collateral {} forfeited to pool.", claim.collateral);
+    msg!(
+        "Insurance claim denied. Collateral {} forfeited to pool.",
+        claim.collateral
+    );
     Ok(())
 }
 

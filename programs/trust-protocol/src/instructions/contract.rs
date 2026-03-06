@@ -1,7 +1,7 @@
-use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Token, TokenAccount, Transfer, Burn};
-use crate::state::*;
 use crate::errors::TrustError;
+use crate::state::*;
+use anchor_lang::prelude::*;
+use anchor_spl::token::{self, Burn, Token, TokenAccount, Transfer};
 
 /// Calculate stake factor based on TrustScore.
 /// Whitepaper: factor_stake decreases linearly from 100% (score 0) to 5% (score 100).
@@ -79,12 +79,19 @@ pub fn handler_create(ctx: Context<CreateContract>, value: u64) -> Result<()> {
 
     // Increment contract counter
     let config = &mut ctx.accounts.protocol_config;
-    config.total_contracts = config.total_contracts.checked_add(1).ok_or(TrustError::MathOverflow)?;
+    config.total_contracts = config
+        .total_contracts
+        .checked_add(1)
+        .ok_or(TrustError::MathOverflow)?;
 
     msg!(
         "Contract #{} created. Value: {}, Stake: {} (factor: {}bps). Requester: {}, Provider: {}",
-        contract_id, value, stake_required, stake_factor,
-        contract.requester, contract.provider
+        contract_id,
+        value,
+        stake_required,
+        stake_factor,
+        contract.requester,
+        contract.provider
     );
     Ok(())
 }
@@ -97,8 +104,14 @@ pub fn handler_deliver(
     arweave_tx: String,
 ) -> Result<()> {
     let contract = &mut ctx.accounts.contract;
-    require!(contract.status == ContractStatus::Active, TrustError::InvalidContractStatus);
-    require!(contract.provider == ctx.accounts.provider.key(), TrustError::UnauthorizedProvider);
+    require!(
+        contract.status == ContractStatus::Active,
+        TrustError::InvalidContractStatus
+    );
+    require!(
+        contract.provider == ctx.accounts.provider.key(),
+        TrustError::UnauthorizedProvider
+    );
 
     contract.poe_hash = output_hash;
     contract.poe_arweave_tx = arweave_tx.clone();
@@ -123,8 +136,14 @@ pub fn handler_deliver(
 /// Updates provider's TrustScore factors (tasks_completed, volume_processed).
 pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
     let contract = &mut ctx.accounts.contract;
-    require!(contract.status == ContractStatus::Delivered, TrustError::InvalidContractStatus);
-    require!(contract.requester == ctx.accounts.requester.key(), TrustError::UnauthorizedRequester);
+    require!(
+        contract.status == ContractStatus::Delivered,
+        TrustError::InvalidContractStatus
+    );
+    require!(
+        contract.requester == ctx.accounts.requester.key(),
+        TrustError::UnauthorizedRequester
+    );
 
     contract.status = ContractStatus::Completed;
     contract.resolved_at = Clock::get()?.unix_timestamp;
@@ -136,17 +155,18 @@ pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
     // Update provider stats
     let provider_identity = &mut ctx.accounts.provider_identity;
     provider_identity.tasks_completed = provider_identity.tasks_completed.saturating_add(1);
-    provider_identity.volume_processed = provider_identity.volume_processed.saturating_add(contract.value);
+    provider_identity.volume_processed = provider_identity
+        .volume_processed
+        .saturating_add(contract.value);
 
     // Release escrow: payment to provider, stake back to provider
-    let total_release = contract.value.checked_add(contract.provider_stake).ok_or(TrustError::MathOverflow)?;
+    let total_release = contract
+        .value
+        .checked_add(contract.provider_stake)
+        .ok_or(TrustError::MathOverflow)?;
     let contract_id_bytes = contract.id.to_le_bytes();
     let escrow_bump = ctx.bumps.escrow_vault;
-    let escrow_seeds: &[&[u8]] = &[
-        b"escrow",
-        &contract_id_bytes,
-        &[escrow_bump],
-    ];
+    let escrow_seeds: &[&[u8]] = &[b"escrow", &contract_id_bytes, &[escrow_bump]];
     let signer_seeds = &[escrow_seeds];
 
     let transfer_ctx = CpiContext::new_with_signer(
@@ -162,7 +182,10 @@ pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
 
     msg!(
         "Contract #{} completed. {} SWORN released to provider. Tasks: {}, Volume: {}",
-        contract.id, total_release, provider_identity.tasks_completed, provider_identity.volume_processed
+        contract.id,
+        total_release,
+        provider_identity.tasks_completed,
+        provider_identity.volume_processed
     );
     Ok(())
 }

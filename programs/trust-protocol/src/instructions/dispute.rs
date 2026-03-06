@@ -1,7 +1,7 @@
-use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Token, TokenAccount, Transfer, Burn, Mint};
-use crate::state::*;
 use crate::errors::TrustError;
+use crate::state::*;
+use anchor_lang::prelude::*;
+use anchor_spl::token::{self, Burn, Mint, Token, TokenAccount, Transfer};
 
 /// Initiate a dispute on a delivered contract.
 /// Whitepaper Section 5: Dispute Resolution - starts at Level 1 (Direct Correction).
@@ -11,7 +11,10 @@ pub fn handler_initiate(ctx: Context<InitiateDispute>, evidence_hash: [u8; 32]) 
         contract.status == ContractStatus::Delivered || contract.status == ContractStatus::Active,
         TrustError::InvalidContractStatus
     );
-    require!(contract.requester == ctx.accounts.requester.key(), TrustError::UnauthorizedRequester);
+    require!(
+        contract.requester == ctx.accounts.requester.key(),
+        TrustError::UnauthorizedRequester
+    );
 
     contract.status = ContractStatus::Disputed;
     contract.dispute_level = 1;
@@ -32,22 +35,35 @@ pub fn handler_initiate(ctx: Context<InitiateDispute>, evidence_hash: [u8; 32]) 
     dispute.resolved_at = 0;
     dispute.bump = ctx.bumps.dispute;
 
-    msg!("Dispute initiated on contract #{}. Level: DirectCorrection. Deadline: {}", contract.id, dispute.deadline);
+    msg!(
+        "Dispute initiated on contract #{}. Level: DirectCorrection. Deadline: {}",
+        contract.id,
+        dispute.deadline
+    );
     Ok(())
 }
 
 /// Provider responds to dispute with correction (Level 1) or counter-evidence.
 pub fn handler_respond(ctx: Context<RespondDispute>, response_hash: [u8; 32]) -> Result<()> {
     let dispute = &mut ctx.accounts.dispute;
-    require!(dispute.status == DisputeStatus::Open, TrustError::InvalidContractStatus);
+    require!(
+        dispute.status == DisputeStatus::Open,
+        TrustError::InvalidContractStatus
+    );
 
     let contract = &ctx.accounts.contract;
-    require!(contract.provider == ctx.accounts.provider.key(), TrustError::UnauthorizedProvider);
+    require!(
+        contract.provider == ctx.accounts.provider.key(),
+        TrustError::UnauthorizedProvider
+    );
 
     dispute.response_hash = response_hash;
     dispute.status = DisputeStatus::Responded;
 
-    msg!("Provider responded to dispute on contract #{}.", contract.id);
+    msg!(
+        "Provider responded to dispute on contract #{}.",
+        contract.id
+    );
     Ok(())
 }
 
@@ -72,9 +88,9 @@ pub fn handler_escalate(ctx: Context<EscalateDispute>) -> Result<()> {
     };
 
     let deadline_days = match new_level {
-        DisputeLevel::PrivateRounds => 5,   // 5 days for private negotiation
-        DisputeLevel::PublicJury => 7,       // 7 days for jury voting
-        DisputeLevel::Appeal => 10,          // 10 days for appeal jury
+        DisputeLevel::PrivateRounds => 5, // 5 days for private negotiation
+        DisputeLevel::PublicJury => 7,    // 7 days for jury voting
+        DisputeLevel::Appeal => 10,       // 10 days for appeal jury
         _ => 7,
     };
 
@@ -84,8 +100,8 @@ pub fn handler_escalate(ctx: Context<EscalateDispute>) -> Result<()> {
 
     // Set jury size for Public Jury and Appeal
     match dispute.level {
-        DisputeLevel::PublicJury => dispute.jury_size = 5,  // 5 jurors
-        DisputeLevel::Appeal => dispute.jury_size = 11,     // 11 jurors (double-or-nothing)
+        DisputeLevel::PublicJury => dispute.jury_size = 5, // 5 jurors
+        DisputeLevel::Appeal => dispute.jury_size = 11,    // 11 jurors (double-or-nothing)
         _ => {}
     }
 
@@ -97,7 +113,11 @@ pub fn handler_escalate(ctx: Context<EscalateDispute>) -> Result<()> {
         DisputeLevel::Appeal => 4,
     };
 
-    msg!("Dispute escalated to level {}. New deadline: {}", contract.dispute_level, dispute.deadline);
+    msg!(
+        "Dispute escalated to level {}. New deadline: {}",
+        contract.dispute_level,
+        dispute.deadline
+    );
     Ok(())
 }
 
@@ -112,8 +132,14 @@ pub fn handler_vote(ctx: Context<JuryVote>, vote_for_provider: bool) -> Result<(
         dispute.level == DisputeLevel::PublicJury || dispute.level == DisputeLevel::Appeal,
         TrustError::InvalidContractStatus
     );
-    require!(dispute.status == DisputeStatus::Open || dispute.status == DisputeStatus::Voting, TrustError::InvalidContractStatus);
-    require!(juror.trust_score > 70, TrustError::InsufficientJuryReputation);
+    require!(
+        dispute.status == DisputeStatus::Open || dispute.status == DisputeStatus::Voting,
+        TrustError::InvalidContractStatus
+    );
+    require!(
+        juror.trust_score > 70,
+        TrustError::InsufficientJuryReputation
+    );
     require!(!juror.banned, TrustError::AgentBanned);
     require!(juror.matured, TrustError::IdentityNotMatured);
 
@@ -130,8 +156,13 @@ pub fn handler_vote(ctx: Context<JuryVote>, vote_for_provider: bool) -> Result<(
     msg!(
         "Juror {} voted for {}. Tally: provider={}, requester={}",
         ctx.accounts.juror.key(),
-        if vote_for_provider { "provider" } else { "requester" },
-        dispute.votes_provider, dispute.votes_requester
+        if vote_for_provider {
+            "provider"
+        } else {
+            "requester"
+        },
+        dispute.votes_provider,
+        dispute.votes_requester
     );
     Ok(())
 }
@@ -144,7 +175,9 @@ pub fn handler_resolve(ctx: Context<ResolveDispute>, provider_wins: bool) -> Res
     let final_provider_wins = {
         let dispute = &ctx.accounts.dispute;
         if dispute.level == DisputeLevel::PublicJury || dispute.level == DisputeLevel::Appeal {
-            let total_votes = dispute.votes_provider.saturating_add(dispute.votes_requester);
+            let total_votes = dispute
+                .votes_provider
+                .saturating_add(dispute.votes_requester);
             require!(total_votes > 0, TrustError::InvalidContractStatus);
             dispute.votes_provider > dispute.votes_requester
         } else {
@@ -167,7 +200,10 @@ pub fn handler_resolve(ctx: Context<ResolveDispute>, provider_wins: bool) -> Res
         ctx.accounts.contract.status = ContractStatus::ResolvedProvider;
 
         // Provider gets payment + stake back (same as accept)
-        let total = ctx.accounts.contract.value
+        let total = ctx
+            .accounts
+            .contract
+            .value
             .checked_add(ctx.accounts.contract.provider_stake)
             .ok_or(TrustError::MathOverflow)?;
 
@@ -183,12 +219,18 @@ pub fn handler_resolve(ctx: Context<ResolveDispute>, provider_wins: bool) -> Res
         token::transfer(transfer_ctx, total)?;
 
         // Update requester stats (lost dispute)
-        ctx.accounts.requester_identity.disputes_lost =
-            ctx.accounts.requester_identity.disputes_lost.saturating_add(1);
+        ctx.accounts.requester_identity.disputes_lost = ctx
+            .accounts
+            .requester_identity
+            .disputes_lost
+            .saturating_add(1);
 
         // Update provider stats (won dispute)
-        ctx.accounts.provider_identity.disputes_won =
-            ctx.accounts.provider_identity.disputes_won.saturating_add(1);
+        ctx.accounts.provider_identity.disputes_won = ctx
+            .accounts
+            .provider_identity
+            .disputes_won
+            .saturating_add(1);
 
         msg!("Dispute resolved: PROVIDER wins. {} SWORN released.", total);
     } else {
@@ -206,10 +248,14 @@ pub fn handler_resolve(ctx: Context<ResolveDispute>, provider_wins: bool) -> Res
         // 60% to insurance pool
         let insurance_amount = (confiscated as u128 * insurance_rate_bps as u128 / 10_000) as u64;
         // 25% to requester (winner)
-        let winner_amount = confiscated.saturating_sub(burn_amount).saturating_sub(insurance_amount);
+        let winner_amount = confiscated
+            .saturating_sub(burn_amount)
+            .saturating_sub(insurance_amount);
 
         // Return contract value to requester
-        let refund = contract_value.checked_add(winner_amount).ok_or(TrustError::MathOverflow)?;
+        let refund = contract_value
+            .checked_add(winner_amount)
+            .ok_or(TrustError::MathOverflow)?;
         let transfer_ctx = CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
             Transfer {
@@ -234,8 +280,11 @@ pub fn handler_resolve(ctx: Context<ResolveDispute>, provider_wins: bool) -> Res
             );
             token::transfer(transfer_ctx, insurance_amount)?;
 
-            ctx.accounts.insurance_pool.total_balance =
-                ctx.accounts.insurance_pool.total_balance.saturating_add(insurance_amount);
+            ctx.accounts.insurance_pool.total_balance = ctx
+                .accounts
+                .insurance_pool
+                .total_balance
+                .saturating_add(insurance_amount);
         }
 
         // Burn tokens (15% deflationary mechanic)
@@ -253,12 +302,18 @@ pub fn handler_resolve(ctx: Context<ResolveDispute>, provider_wins: bool) -> Res
         }
 
         // Update provider stats (lost dispute)
-        ctx.accounts.provider_identity.disputes_lost =
-            ctx.accounts.provider_identity.disputes_lost.saturating_add(1);
+        ctx.accounts.provider_identity.disputes_lost = ctx
+            .accounts
+            .provider_identity
+            .disputes_lost
+            .saturating_add(1);
 
         // Update requester stats (won dispute)
-        ctx.accounts.requester_identity.disputes_won =
-            ctx.accounts.requester_identity.disputes_won.saturating_add(1);
+        ctx.accounts.requester_identity.disputes_won = ctx
+            .accounts
+            .requester_identity
+            .disputes_won
+            .saturating_add(1);
 
         msg!(
             "Dispute resolved: REQUESTER wins. Confiscated: {}. Burned: {}, Insurance: {}, Winner: {}",

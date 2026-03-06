@@ -1,7 +1,7 @@
+use crate::errors::TrustError;
+use crate::state::*;
 use anchor_lang::prelude::*;
 use anchor_spl::token::{Mint, Token};
-use crate::state::*;
-use crate::errors::TrustError;
 
 /// Initialize the Trust Protocol with SWORN token mint and global config.
 /// Called once by the founding team (Phase 0 governance).
