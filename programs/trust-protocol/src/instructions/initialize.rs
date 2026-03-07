@@ -1,6 +1,6 @@
 use crate::state::*;
 use anchor_lang::prelude::*;
-use anchor_spl::token::{Mint, Token};
+use anchor_spl::token::{Mint, Token, TokenAccount};
 
 /// Initialize the Trust Protocol with SWORN token mint and global config.
 /// Called once by the founding team (Phase 0 governance).
@@ -75,6 +75,18 @@ pub struct Initialize<'info> {
     )]
     pub pool_authority: UncheckedAccount<'info>,
 
+    /// Bond vault PDA token account (holds identity bonds permanently)
+    #[account(
+        init,
+        payer = admin,
+        seeds = [b"bond-vault"],
+        bump,
+        token::mint = sworn_mint,
+        token::authority = pool_authority,
+    )]
+    pub bond_vault: Account<'info, TokenAccount>,
+
+    pub rent: Sysvar<'info, Rent>,
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
 }

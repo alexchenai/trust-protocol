@@ -1,0 +1,104 @@
+name: Deploy to Devnet
+
+on:
+  workflow_dispatch:
+    inputs:
+      initialize:
+        description: 'Initialize the protocol after deployment (creates SWORN mint and config)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+env:
+  SOLANA_VERSION: '1.18.26'
+  ANCHOR_VERSION: '0.31.1'
+
+jobs:
+  deploy:
+    name: Build & Deploy to Devnet
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install Solana CLI
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/v${{ env.SOLANA_VERSION }}/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+
+      - name: Install Anchor CLI
+        run: |
+          cargo install --git https://github.com/coral-xyz/anchor avm --force
+          avm install ${{ env.ANCHOR_VERSION }}
+          avm use ${{ env.ANCHOR_VERSION }}
+
+      - name: Setup wallet
+        run: |
+          mkdir -p ~/.config/solana
+          echo '${{ secrets.DEVNET_WALLET_KEY }}' > ~/.config/solana/id.json
+          solana config set --url devnet
+          solana balance
+
+      - name: Initial build
+        run: anchor build
+
+      - name: Extract and set program ID
+        id: program_id
+        run: |
+          PROGRAM_ID=$(solana-keygen pubkey target/deploy/trust_protocol-keypair.json)
+          echo "program_id=$PROGRAM_ID" >> $GITHUB_OUTPUT
+          echo "Program ID: $PROGRAM_ID"
+
+          # Update program ID in lib.rs
+          sed -i "s/declare_id!(\"[^\"]*\")/declare_id!(\"$PROGRAM_ID\")/" programs/trust-protocol/src/lib.rs
+
+          # Update program ID in Anchor.toml
+          sed -i "s/^trust_protocol = \".*\"/trust_protocol = \"$PROGRAM_ID\"/" Anchor.toml
+          # Also update under [programs.devnet] if it exists
+          sed -i "s/trust-protocol = \".*\"/trust-protocol = \"$PROGRAM_ID\"/" Anchor.toml
+
+      - name: Rebuild with correct program ID
+        run: anchor build
+
+      - name: Deploy to devnet
+        run: |
+          anchor deploy --provider.cluster devnet
+          echo "Deployed program ID: ${{ steps.program_id.outputs.program_id }}"
+
+      - name: Initialize protocol
+        if: ${{ github.event.inputs.initialize == 'true' }}
+        run: |
+          npm ci
+          npx ts-node scripts/initialize-protocol.ts
+        env:
+          ANCHOR_PROVIDER_URL: https://api.devnet.solana.com
+          ANCHOR_WALLET: ~/.config/solana/id.json
+
+      - name: Deployment summary
+        run: |
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Program ID:** \`${{ steps.program_id.outputs.program_id }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Cluster:** devnet" >> $GITHUB_STEP_SUMMARY
+          echo "- **Solana CLI:** v${{ env.SOLANA_VERSION }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Anchor CLI:** v${{ env.ANCHOR_VERSION }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Initialize:** ${{ github.event.inputs.initialize }}" >> $GITHUB_STEP_SUMMARY
