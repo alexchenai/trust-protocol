@@ -44,17 +44,12 @@ jobs:
           export PATH="$HOME/solana-release/bin:$PATH"
           solana --version
 
-      - name: Cache Anchor CLI
-        uses: actions/cache@v4
-        id: cache-anchor
-        with:
-          path: ~/.cargo/bin/anchor
-          key: anchor-cli-${{ runner.os }}-v0.31.1
-
-      - name: Install Anchor CLI
-        if: steps.cache-anchor.outputs.cache-hit != 'true'
+      - name: Install Anchor CLI (pre-built binary)
         run: |
-          cargo install --git https://github.com/coral-xyz/anchor --tag v0.31.1 anchor-cli --force
+          wget -q https://github.com/solana-foundation/anchor/releases/download/v0.31.1/anchor-0.31.1-x86_64-unknown-linux-gnu -O anchor
+          chmod +x anchor
+          sudo mv anchor /usr/local/bin/anchor
+          anchor --version
 
       - name: Verify installations
         run: |
