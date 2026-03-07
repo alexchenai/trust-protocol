@@ -61,11 +61,19 @@ jobs:
       - name: Remove stale Cargo.lock and cached target
         run: rm -f Cargo.lock && rm -rf target
 
-      - name: Generate Cargo.lock v3 before anchor build
-        run: cargo generate-lockfile
+      - name: Fix Solana SDK cargo to prevent Cargo.lock v4
+        run: |
+          # Solana SDK ships a newer cargo that generates Cargo.lock v4
+          # Replace it with our Rust 1.93.1 cargo that generates v3
+          SDK_CARGO=$(find ~/.local/share/solana -name cargo -path '*/platform-tools/rust/bin/cargo' 2>/dev/null | head -1)
+          if [ -n "$SDK_CARGO" ]; then
+            echo "Replacing SDK cargo at: $SDK_CARGO"
+            cp $(which cargo) "$SDK_CARGO"
+          fi
+          cargo generate-lockfile
 
       - name: Initial build
-        run: anchor build -- -- --locked
+        run: anchor build
 
       - name: Extract and set program ID
         id: program_id
@@ -83,7 +91,7 @@ jobs:
           sed -i "s/trust-protocol = \".*\"/trust-protocol = \"$PROGRAM_ID\"/" Anchor.toml
 
       - name: Rebuild with correct program ID
-        run: cargo generate-lockfile && anchor build -- -- --locked
+        run: cargo generate-lockfile && anchor build
 
       - name: Deploy to devnet
         run: |
