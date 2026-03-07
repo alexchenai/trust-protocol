@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       initialize:
-        description: 'Initialize the protocol after deployment (creates SWORN mint and config)'
+        description: 'Initialize the protocol after deployment'
         required: false
         default: 'false'
         type: choice
@@ -28,7 +28,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.93.1
+          toolchain: 1.80.0
 
       - name: Cache Cargo registry
         uses: actions/cache@v4
@@ -61,18 +61,19 @@ jobs:
       - name: Remove stale Cargo.lock and cached target
         run: rm -f Cargo.lock && rm -rf target
 
-      - name: Fix Solana SDK cargo to prevent Cargo.lock v4
+      - name: Override SDK cargo with Rust 1.80 system cargo
         run: |
-          # Solana SDK ships a newer cargo that generates Cargo.lock v4
-          # Replace it with our Rust 1.93.1 cargo that generates v3
-          SDK_CARGO=$(find ~/.local/share/solana -name cargo -path '*/platform-tools/rust/bin/cargo' 2>/dev/null | head -1)
-          if [ -n "$SDK_CARGO" ]; then
-            echo "Replacing SDK cargo at: $SDK_CARGO"
-            cp $(which cargo) "$SDK_CARGO"
-          fi
+          SYSTEM_CARGO=$(which cargo)
+          echo "System cargo: $SYSTEM_CARGO"
+          for SDK_CARGO in $(find ~/.local/share/solana -name cargo 2>/dev/null); do
+            echo "Replacing SDK cargo: $SDK_CARGO"
+            cp "$SYSTEM_CARGO" "$SDK_CARGO"
+          done
           cargo generate-lockfile
+          echo "Cargo.lock first 5 lines:"
+          head -5 Cargo.lock
 
-      - name: Initial build
+      - name: Build
         run: anchor build
 
       - name: Extract and set program ID
@@ -81,22 +82,15 @@ jobs:
           PROGRAM_ID=$(solana-keygen pubkey target/deploy/trust_protocol-keypair.json)
           echo "program_id=$PROGRAM_ID" >> $GITHUB_OUTPUT
           echo "Program ID: $PROGRAM_ID"
-
-          # Update program ID in lib.rs
           sed -i "s/declare_id!(\"[^\"]*\")/declare_id!(\"$PROGRAM_ID\")/" programs/trust-protocol/src/lib.rs
-
-          # Update program ID in Anchor.toml
           sed -i "s/^trust_protocol = \".*\"/trust_protocol = \"$PROGRAM_ID\"/" Anchor.toml
-          # Also update under [programs.devnet] if it exists
           sed -i "s/trust-protocol = \".*\"/trust-protocol = \"$PROGRAM_ID\"/" Anchor.toml
 
       - name: Rebuild with correct program ID
         run: cargo generate-lockfile && anchor build
 
       - name: Deploy to devnet
-        run: |
-          anchor deploy --provider.cluster devnet
-          echo "Deployed program ID: ${{ steps.program_id.outputs.program_id }}"
+        run: anchor deploy --provider.cluster devnet
 
       - name: Initialize protocol
         if: ${{ github.event.inputs.initialize == 'true' }}
@@ -112,6 +106,3 @@ jobs:
           echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
           echo "- **Program ID:** \`${{ steps.program_id.outputs.program_id }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Cluster:** devnet" >> $GITHUB_STEP_SUMMARY
-          echo "- **Solana CLI:** v${{ env.SOLANA_VERSION }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Anchor CLI:** v${{ env.ANCHOR_VERSION }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Initialize:** ${{ github.event.inputs.initialize }}" >> $GITHUB_STEP_SUMMARY
