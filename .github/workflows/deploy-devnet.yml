@@ -14,7 +14,7 @@ on:
 
 env:
   SOLANA_VERSION: '1.18.26'
-  ANCHOR_VERSION: '0.31.1'
+  ANCHOR_VERSION: '0.31.2'
 
 jobs:
   deploy:
@@ -39,22 +39,10 @@ jobs:
         with:
           toolchain: 1.80.0
 
-      - name: Cache Solana CLI
-        uses: actions/cache@v4
-        id: cache-solana
-        with:
-          path: |
-            ~/.cache/solana/
-            ~/.local/share/solana/
-          key: solana-${{ runner.os }}-v${{ env.SOLANA_VERSION }}
-
       - name: Install Solana CLI
-        if: steps.cache-solana.outputs.cache-hit != 'true'
         run: |
           sh -c "$(curl -sSfL https://release.solana.com/v${{ env.SOLANA_VERSION }}/install)"
-
-      - name: Set Solana PATH
-        run: echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
 
       - name: Install Anchor CLI via npm
         run: npm i -g @coral-xyz/anchor-cli@${{ env.ANCHOR_VERSION }}
