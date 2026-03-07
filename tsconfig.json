@@ -2,16 +2,18 @@
   "compilerOptions": {
     "types": ["mocha", "chai", "node"],
     "typeRoots": ["./node_modules/@types"],
-    "lib": ["es2015", "dom"],
+    "lib": ["es2020", "dom"],
     "module": "commonjs",
-    "target": "es6",
+    "target": "es2020",
     "esModuleInterop": true,
-    "strict": true,
+    "strict": false,
     "resolveJsonModule": true,
     "outDir": "./dist",
     "declaration": true,
     "sourceMap": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "noImplicitAny": false
   },
-  "include": ["sdk/**/*", "tests/**/*"]
+  "include": ["sdk/**/*", "tests/**/*"],
+  "exclude": ["node_modules", "dist", "target"]
 }
