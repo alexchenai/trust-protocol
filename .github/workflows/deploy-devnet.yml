@@ -41,14 +41,18 @@ jobs:
 
       - name: Install Solana CLI
         run: |
-          sh -c "$(curl -sSfL https://release.solana.com/v${{ env.SOLANA_VERSION }}/install)"
+          sh -c "$(curl -sSfL https://release.anza.xyz/v${{ env.SOLANA_VERSION }}/install)"
           echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+          export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
+          solana --version
 
       - name: Install Anchor CLI via npm
         run: npm i -g @coral-xyz/anchor-cli@${{ env.ANCHOR_VERSION }}
 
       - name: Verify installations
         run: |
+          echo "PATH=$PATH"
+          which solana
           solana --version
           anchor --version
           rustc --version
