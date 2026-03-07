@@ -20,15 +20,65 @@ jobs:
   deploy:
     name: Build & Deploy to Devnet
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config build-essential libudev-dev
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.80.0
+
+      - name: Cache Solana CLI
+        uses: actions/cache@v4
+        id: cache-solana
+        with:
+          path: |
+            ~/.cache/solana/
+            ~/.local/share/solana/
+          key: solana-${{ runner.os }}-v${{ env.SOLANA_VERSION }}
+
+      - name: Install Solana CLI
+        if: steps.cache-solana.outputs.cache-hit != 'true'
+        run: |
+          sh -c "$(curl -sSfL https://release.solana.com/v${{ env.SOLANA_VERSION }}/install)"
+
+      - name: Set Solana PATH
+        run: echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+
+      - name: Install Anchor CLI via npm
+        run: npm i -g @coral-xyz/anchor-cli@${{ env.ANCHOR_VERSION }}
+
+      - name: Verify installations
+        run: |
+          solana --version
+          anchor --version
+          rustc --version
+          cargo --version
+
+      - name: Setup wallet
+        run: |
+          mkdir -p ~/.config/solana
+          echo '${{ secrets.DEVNET_WALLET_KEY }}' > ~/.config/solana/id.json
+          solana config set --url devnet
+          echo "Wallet balance:"
+          solana balance
+
+      - name: Remove stale Cargo.lock
+        run: rm -f Cargo.lock
+
+      - name: Generate fresh lockfile
+        run: cargo generate-lockfile
 
       - name: Cache Cargo registry
         uses: actions/cache@v4
@@ -36,42 +86,9 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.toml') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
-
-      - name: Install Solana CLI
-        run: |
-          sh -c "$(curl -sSfL https://release.anza.xyz/v${{ env.SOLANA_VERSION }}/install)"
-          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
-
-      - name: Install Anchor CLI
-        run: |
-          cargo install --git https://github.com/coral-xyz/anchor avm --force
-          avm install ${{ env.ANCHOR_VERSION }}
-          avm use ${{ env.ANCHOR_VERSION }}
-
-      - name: Setup wallet
-        run: |
-          mkdir -p ~/.config/solana
-          echo '${{ secrets.DEVNET_WALLET_KEY }}' > ~/.config/solana/id.json
-          solana config set --url devnet
-          solana balance
-
-      - name: Remove stale Cargo.lock and cached target
-        run: rm -f Cargo.lock && rm -rf target
-
-      - name: Override SDK cargo with Rust 1.80 system cargo
-        run: |
-          SYSTEM_CARGO=$(which cargo)
-          echo "System cargo: $SYSTEM_CARGO"
-          for SDK_CARGO in $(find ~/.local/share/solana -name cargo 2>/dev/null); do
-            echo "Replacing SDK cargo: $SDK_CARGO"
-            cp "$SYSTEM_CARGO" "$SDK_CARGO"
-          done
-          cargo generate-lockfile
-          echo "Cargo.lock first 5 lines:"
-          head -5 Cargo.lock
+            ${{ runner.os }}-cargo-registry-
 
       - name: Build
         run: anchor build
@@ -87,10 +104,16 @@ jobs:
           sed -i "s/trust-protocol = \".*\"/trust-protocol = \"$PROGRAM_ID\"/" Anchor.toml
 
       - name: Rebuild with correct program ID
-        run: cargo generate-lockfile && anchor build
+        run: |
+          rm -f Cargo.lock
+          cargo generate-lockfile
+          anchor build
 
       - name: Deploy to devnet
-        run: anchor deploy --provider.cluster devnet
+        run: |
+          echo "Deploying to devnet..."
+          solana balance
+          anchor deploy --provider.cluster devnet
 
       - name: Initialize protocol
         if: ${{ github.event.inputs.initialize == 'true' }}
@@ -106,3 +129,5 @@ jobs:
           echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
           echo "- **Program ID:** \`${{ steps.program_id.outputs.program_id }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Cluster:** devnet" >> $GITHUB_STEP_SUMMARY
+          echo "- **Wallet:** $(solana-keygen pubkey ~/.config/solana/id.json)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Balance after deploy:** $(solana balance)" >> $GITHUB_STEP_SUMMARY
