@@ -36,7 +36,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
@@ -59,8 +58,8 @@ jobs:
           solana config set --url devnet
           solana balance
 
-      - name: Remove stale Cargo.lock
-        run: rm -f Cargo.lock
+      - name: Remove stale Cargo.lock and cached target
+        run: rm -f Cargo.lock && rm -rf target
 
       - name: Initial build
         run: anchor build
