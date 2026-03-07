@@ -65,7 +65,7 @@ jobs:
         run: cargo generate-lockfile
 
       - name: Initial build
-        run: anchor build
+        run: CARGO_LOCKED=1 anchor build -- --locked
 
       - name: Extract and set program ID
         id: program_id
@@ -83,7 +83,7 @@ jobs:
           sed -i "s/trust-protocol = \".*\"/trust-protocol = \"$PROGRAM_ID\"/" Anchor.toml
 
       - name: Rebuild with correct program ID
-        run: anchor build
+        run: cargo generate-lockfile && CARGO_LOCKED=1 anchor build -- --locked
 
       - name: Deploy to devnet
         run: |
