@@ -23,7 +23,7 @@ jobs:
         run: npm ci
 
       - name: TypeScript compile check
-        run: npx tsc --noEmit -p tsconfig.json --skipLibCheck
+        run: npx tsc --noEmit
 
       - name: Run TypeScript tests
         run: npx ts-mocha -p ./tsconfig.json -t 30000 tests/**/*.ts

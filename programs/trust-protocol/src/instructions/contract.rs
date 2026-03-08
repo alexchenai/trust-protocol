@@ -1,7 +1,7 @@
 use crate::errors::TrustError;
 use crate::state::*;
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
+use anchor_spl::token::{self, Token, TokenAccount, Transfer};
 
 /// Calculate stake factor based on TrustScore.
 /// Whitepaper: factor_stake decreases linearly from 100% (score 0) to 5% (score 100).
@@ -229,17 +229,11 @@ pub struct CreateContract<'info> {
 
     /// Escrow vault PDA for this contract
     #[account(
-        init,
-        payer = requester,
+        mut,
         seeds = [b"escrow", &protocol_config.total_contracts.to_le_bytes()],
         bump,
-        token::mint = sworn_mint,
-        token::authority = escrow_vault,
     )]
     pub escrow_vault: Account<'info, TokenAccount>,
-
-    /// The SWORN token mint
-    pub sworn_mint: Account<'info, Mint>,
 
     #[account(
         mut,
@@ -248,7 +242,6 @@ pub struct CreateContract<'info> {
     )]
     pub protocol_config: Account<'info, ProtocolConfig>,
 
-    pub rent: Sysvar<'info, Rent>,
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
 }
