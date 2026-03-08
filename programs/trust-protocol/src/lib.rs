@@ -11,7 +11,7 @@ pub mod state;
 
 use instructions::*;
 
-declare_id!("TRSTpRoToCoL1111111111111111111111111111111");
+declare_id!("CSBAc1SiMALr4rnuCoB17BsddzthB4RAhjibGvyt6p6S");
 
 #[program]
 pub mod trust_protocol {

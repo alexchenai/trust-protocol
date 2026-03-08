@@ -3,17 +3,42 @@ use crate::state::*;
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Token, TokenAccount, Transfer};
 
-/// Calculate stake factor based on TrustScore.
-/// Whitepaper: factor_stake decreases linearly from 100% (score 0) to 5% (score 100).
-/// Returns basis points (10000 = 100%).
-fn calculate_stake_factor(trust_score: u16, min_bps: u16, max_bps: u16) -> u16 {
+/// Calculate stake factor based on TrustScore using CONVEX curve.
+/// Whitepaper: factor_stake(ts) = max(0.05, 1.0 - 0.95 * (ts/100)^1.5)
+/// Returns basis points (10000 = 100%, 500 = 5%).
+/// Uses integer approximation of the convex curve with a lookup table
+/// to avoid floating-point operations on-chain.
+fn calculate_stake_factor(trust_score: u16, min_bps: u16, _max_bps: u16) -> u16 {
     if trust_score >= 100 {
-        return min_bps;
+        return min_bps; // 500 bps = 5%
     }
-    // Linear interpolation: max_bps - (trust_score * (max_bps - min_bps) / 100)
-    let range = (max_bps as u32).saturating_sub(min_bps as u32);
-    let reduction = range.saturating_mul(trust_score as u32) / 100;
-    (max_bps as u32).saturating_sub(reduction) as u16
+    if trust_score == 0 {
+        return 10_000; // 100%
+    }
+    // Convex curve: f(ts) = max(min_bps, 10000 - 9500 * (ts/100)^1.5)
+    // Integer approximation: (ts/100)^1.5 = (ts^3)^0.5 / 100^1.5 = sqrt(ts^3) / 1000
+    // We compute: reduction = 9500 * sqrt(ts^3) / 1000
+    let ts = trust_score as u64;
+    let ts_cubed = ts * ts * ts; // ts^3, max 100^3 = 1_000_000
+    let sqrt_ts_cubed = integer_sqrt(ts_cubed); // sqrt(ts^3)
+    let reduction = (9_500u64 * sqrt_ts_cubed) / 1_000;
+    let factor = 10_000u64.saturating_sub(reduction);
+    let factor = factor.max(min_bps as u64);
+    factor as u16
+}
+
+/// Integer square root (Newton's method).
+fn integer_sqrt(n: u64) -> u64 {
+    if n == 0 {
+        return 0;
+    }
+    let mut x = n;
+    let mut y = (x + 1) / 2;
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    x
 }
 
 /// Create a new contract between requester and provider.
@@ -25,6 +50,14 @@ pub fn handler_create(ctx: Context<CreateContract>, value: u64) -> Result<()> {
 
     require!(!provider_identity.banned, TrustError::AgentBanned);
     require!(provider_identity.matured, TrustError::IdentityNotMatured);
+
+    // Exposure limit check (Whitepaper Section 7.3)
+    // max_contracts = floor(TrustScore / 10) + 1
+    let max_contracts = (provider_identity.trust_score as u64 / 10) + 1;
+    // NOTE: We cannot count active contracts on-chain without iteration.
+    // For now we log the limit. Full enforcement requires an active_contracts counter
+    // on AgentIdentity (future upgrade).
+    msg!("Exposure limit: max {} simultaneous contracts for TS {}", max_contracts, provider_identity.trust_score);
 
     // Calculate required stake
     let stake_factor = calculate_stake_factor(
@@ -133,7 +166,8 @@ pub fn handler_deliver(
 }
 
 /// Requester accepts deliverable. Releases payment + returns provider stake.
-/// Updates provider's TrustScore factors (tasks_completed, volume_processed).
+/// Deducts 1% protocol fee (70% treasury / 20% insurance / 10% burn).
+/// Whitepaper Section 11.8: fee deducted at accept_contract.
 pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
     let contract = &mut ctx.accounts.contract;
     require!(
@@ -159,16 +193,25 @@ pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
         .volume_processed
         .saturating_add(contract.value);
 
-    // Release escrow: payment to provider, stake back to provider
-    let total_release = contract
-        .value
+    // Calculate protocol fee: 1% of contract value (Whitepaper Section 11.8)
+    // Split: 70% treasury, 20% insurance pool, 10% burn
+    let protocol_fee = contract.value / 100; // 1%
+    let fee_treasury = protocol_fee * 70 / 100;
+    let fee_insurance = protocol_fee * 20 / 100;
+    let fee_burn = protocol_fee.saturating_sub(fee_treasury).saturating_sub(fee_insurance); // remainder = 10%
+
+    // Net payment to provider = contract value - protocol fee + stake return
+    let net_payment = contract.value.saturating_sub(protocol_fee);
+    let provider_release = net_payment
         .checked_add(contract.provider_stake)
         .ok_or(TrustError::MathOverflow)?;
+
     let contract_id_bytes = contract.id.to_le_bytes();
     let escrow_bump = ctx.bumps.escrow_vault;
     let escrow_seeds: &[&[u8]] = &[b"escrow", &contract_id_bytes, &[escrow_bump]];
     let signer_seeds = &[escrow_seeds];
 
+    // Transfer net payment + stake to provider
     let transfer_ctx = CpiContext::new_with_signer(
         ctx.accounts.token_program.to_account_info(),
         Transfer {
@@ -178,12 +221,61 @@ pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
         },
         signer_seeds,
     );
-    token::transfer(transfer_ctx, total_release)?;
+    token::transfer(transfer_ctx, provider_release)?;
+
+    // Transfer treasury portion to treasury (admin wallet for now)
+    if fee_treasury > 0 {
+        let transfer_ctx = CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            Transfer {
+                from: ctx.accounts.escrow_vault.to_account_info(),
+                to: ctx.accounts.treasury_token_account.to_account_info(),
+                authority: ctx.accounts.escrow_vault.to_account_info(),
+            },
+            signer_seeds,
+        );
+        token::transfer(transfer_ctx, fee_treasury)?;
+    }
+
+    // Transfer insurance portion to insurance pool vault
+    if fee_insurance > 0 {
+        let transfer_ctx = CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            Transfer {
+                from: ctx.accounts.escrow_vault.to_account_info(),
+                to: ctx.accounts.insurance_vault.to_account_info(),
+                authority: ctx.accounts.escrow_vault.to_account_info(),
+            },
+            signer_seeds,
+        );
+        token::transfer(transfer_ctx, fee_insurance)?;
+    }
+
+    // Burn portion: transfer to burn account (or use token::burn if mint authority available)
+    // Since mint authority is revoked, we send to a dead address or the insurance pool
+    // For now, burn goes to insurance pool (effectively 30% insurance)
+    // TODO: Implement proper burn via token::burn when burn authority is set up
+    if fee_burn > 0 {
+        let transfer_ctx = CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            Transfer {
+                from: ctx.accounts.escrow_vault.to_account_info(),
+                to: ctx.accounts.insurance_vault.to_account_info(),
+                authority: ctx.accounts.escrow_vault.to_account_info(),
+            },
+            signer_seeds,
+        );
+        token::transfer(transfer_ctx, fee_burn)?;
+    }
 
     msg!(
-        "Contract #{} completed. {} SWORN released to provider. Tasks: {}, Volume: {}",
+        "Contract #{} completed. Provider: {} SWORN (net). Fee: {} (treasury: {}, insurance: {}, burn: {}). Tasks: {}, Volume: {}",
         contract.id,
-        total_release,
+        provider_release,
+        protocol_fee,
+        fee_treasury,
+        fee_insurance,
+        fee_burn,
         provider_identity.tasks_completed,
         provider_identity.volume_processed
     );
@@ -302,6 +394,21 @@ pub struct AcceptContract<'info> {
         constraint = provider_token_account.mint == protocol_config.sworn_mint,
     )]
     pub provider_token_account: Account<'info, TokenAccount>,
+
+    /// Treasury token account (receives 70% of protocol fee)
+    #[account(
+        mut,
+        constraint = treasury_token_account.owner == protocol_config.admin,
+        constraint = treasury_token_account.mint == protocol_config.sworn_mint,
+    )]
+    pub treasury_token_account: Account<'info, TokenAccount>,
+
+    /// Insurance pool vault (receives 20% of protocol fee + 10% burn)
+    #[account(
+        mut,
+        constraint = insurance_vault.mint == protocol_config.sworn_mint,
+    )]
+    pub insurance_vault: Account<'info, TokenAccount>,
 
     /// Escrow vault for this contract
     #[account(
