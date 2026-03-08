@@ -66,8 +66,12 @@ jobs:
           echo "Wallet balance:"
           solana balance
 
-      - name: Remove stale Cargo.lock
-        run: rm -f Cargo.lock
+      - name: Generate Cargo.lock with system cargo (v3 format)
+        run: |
+          rm -f Cargo.lock
+          cargo generate-lockfile
+          head -3 Cargo.lock
+          echo "Lockfile generated successfully"
 
       - name: Build
         run: anchor build
