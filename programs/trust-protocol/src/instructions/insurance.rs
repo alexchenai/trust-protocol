@@ -182,7 +182,7 @@ pub struct FileInsuranceClaim<'info> {
         init,
         payer = claimant,
         space = 8 + InsuranceClaim::INIT_SPACE,
-        seeds = [b"insurance-claim", contract.key().as_ref()],
+        seeds = [b"insurance-claim" as &[u8], contract.key().as_ref()],
         bump
     )]
     pub insurance_claim: Account<'info, InsuranceClaim>,
@@ -245,7 +245,7 @@ pub struct ApproveInsuranceClaim<'info> {
 
     #[account(
         mut,
-        seeds = [b"agent-identity", provider_identity.authority.as_ref()],
+        seeds = [b"agent-identity" as &[u8], provider_identity.authority.as_ref()],
         bump = provider_identity.bump,
     )]
     pub provider_identity: Account<'info, AgentIdentity>,

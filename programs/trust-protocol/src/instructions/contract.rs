@@ -199,7 +199,7 @@ pub struct CreateContract<'info> {
     pub provider: UncheckedAccount<'info>,
 
     #[account(
-        seeds = [b"agent-identity", provider.key().as_ref()],
+        seeds = [b"agent-identity" as &[u8], provider.key().as_ref()],
         bump = provider_identity.bump,
     )]
     pub provider_identity: Account<'info, AgentIdentity>,
@@ -208,7 +208,7 @@ pub struct CreateContract<'info> {
         init,
         payer = requester,
         space = 8 + Contract::INIT_SPACE,
-        seeds = [b"contract", &protocol_config.total_contracts.to_le_bytes()],
+        seeds = [b"contract" as &[u8], &protocol_config.total_contracts.to_le_bytes()],
         bump
     )]
     pub contract: Account<'info, Contract>,
@@ -230,7 +230,7 @@ pub struct CreateContract<'info> {
     /// Escrow vault PDA for this contract
     #[account(
         mut,
-        seeds = [b"escrow", &protocol_config.total_contracts.to_le_bytes()],
+        seeds = [b"escrow" as &[u8], &protocol_config.total_contracts.to_le_bytes()],
         bump,
     )]
     pub escrow_vault: Account<'info, TokenAccount>,
@@ -262,7 +262,7 @@ pub struct DeliverContract<'info> {
         init,
         payer = provider,
         space = 8 + ProofOfExecution::INIT_SPACE,
-        seeds = [b"poe", contract.key().as_ref()],
+        seeds = [b"poe" as &[u8], contract.key().as_ref()],
         bump
     )]
     pub proof_of_execution: Account<'info, ProofOfExecution>,
@@ -283,14 +283,14 @@ pub struct AcceptContract<'info> {
 
     #[account(
         mut,
-        seeds = [b"poe", contract.key().as_ref()],
+        seeds = [b"poe" as &[u8], contract.key().as_ref()],
         bump = proof_of_execution.bump,
     )]
     pub proof_of_execution: Account<'info, ProofOfExecution>,
 
     #[account(
         mut,
-        seeds = [b"agent-identity", contract.provider.as_ref()],
+        seeds = [b"agent-identity" as &[u8], contract.provider.as_ref()],
         bump = provider_identity.bump,
     )]
     pub provider_identity: Account<'info, AgentIdentity>,
@@ -306,7 +306,7 @@ pub struct AcceptContract<'info> {
     /// Escrow vault for this contract
     #[account(
         mut,
-        seeds = [b"escrow", &contract.id.to_le_bytes()],
+        seeds = [b"escrow" as &[u8], &contract.id.to_le_bytes()],
         bump,
     )]
     pub escrow_vault: Account<'info, TokenAccount>,

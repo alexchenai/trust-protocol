@@ -93,7 +93,7 @@ pub struct RegisterAgent<'info> {
         init,
         payer = agent,
         space = 8 + AgentIdentity::INIT_SPACE,
-        seeds = [b"agent-identity", agent.key().as_ref()],
+        seeds = [b"agent-identity" as &[u8], agent.key().as_ref()],
         bump
     )]
     pub agent_identity: Account<'info, AgentIdentity>,
@@ -130,7 +130,7 @@ pub struct SponsorAgent<'info> {
     pub sponsor: Signer<'info>,
 
     #[account(
-        seeds = [b"agent-identity", sponsor.key().as_ref()],
+        seeds = [b"agent-identity" as &[u8], sponsor.key().as_ref()],
         bump = sponsor_identity.bump,
         constraint = sponsor_identity.authority == sponsor.key(),
     )]
@@ -138,7 +138,7 @@ pub struct SponsorAgent<'info> {
 
     #[account(
         mut,
-        seeds = [b"agent-identity", agent_identity.authority.as_ref()],
+        seeds = [b"agent-identity" as &[u8], agent_identity.authority.as_ref()],
         bump = agent_identity.bump,
     )]
     pub agent_identity: Account<'info, AgentIdentity>,

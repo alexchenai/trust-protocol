@@ -339,7 +339,7 @@ pub struct InitiateDispute<'info> {
         init,
         payer = requester,
         space = 8 + Dispute::INIT_SPACE,
-        seeds = [b"dispute", contract.key().as_ref()],
+        seeds = [b"dispute" as &[u8], contract.key().as_ref()],
         bump
     )]
     pub dispute: Account<'info, Dispute>,
@@ -355,7 +355,7 @@ pub struct RespondDispute<'info> {
 
     #[account(
         mut,
-        seeds = [b"dispute", contract.key().as_ref()],
+        seeds = [b"dispute" as &[u8], contract.key().as_ref()],
         bump = dispute.bump,
     )]
     pub dispute: Account<'info, Dispute>,
@@ -370,7 +370,7 @@ pub struct EscalateDispute<'info> {
 
     #[account(
         mut,
-        seeds = [b"dispute", contract.key().as_ref()],
+        seeds = [b"dispute" as &[u8], contract.key().as_ref()],
         bump = dispute.bump,
         constraint = dispute.initiator == initiator.key(),
     )]
@@ -385,13 +385,13 @@ pub struct JuryVote<'info> {
 
     #[account(
         mut,
-        seeds = [b"dispute", contract.key().as_ref()],
+        seeds = [b"dispute" as &[u8], contract.key().as_ref()],
         bump = dispute.bump,
     )]
     pub dispute: Account<'info, Dispute>,
 
     #[account(
-        seeds = [b"agent-identity", juror.key().as_ref()],
+        seeds = [b"agent-identity" as &[u8], juror.key().as_ref()],
         bump = juror_identity.bump,
         constraint = juror_identity.authority == juror.key(),
     )]
@@ -408,21 +408,21 @@ pub struct ResolveDispute<'info> {
 
     #[account(
         mut,
-        seeds = [b"dispute", contract.key().as_ref()],
+        seeds = [b"dispute" as &[u8], contract.key().as_ref()],
         bump = dispute.bump,
     )]
     pub dispute: Account<'info, Dispute>,
 
     #[account(
         mut,
-        seeds = [b"agent-identity", contract.provider.as_ref()],
+        seeds = [b"agent-identity" as &[u8], contract.provider.as_ref()],
         bump = provider_identity.bump,
     )]
     pub provider_identity: Account<'info, AgentIdentity>,
 
     #[account(
         mut,
-        seeds = [b"agent-identity", contract.requester.as_ref()],
+        seeds = [b"agent-identity" as &[u8], contract.requester.as_ref()],
         bump = requester_identity.bump,
     )]
     pub requester_identity: Account<'info, AgentIdentity>,
@@ -441,7 +441,7 @@ pub struct ResolveDispute<'info> {
 
     #[account(
         mut,
-        seeds = [b"escrow", &contract.id.to_le_bytes()],
+        seeds = [b"escrow" as &[u8], &contract.id.to_le_bytes()],
         bump,
     )]
     pub escrow_vault: Account<'info, TokenAccount>,
