@@ -337,15 +337,16 @@ type Dispute struct {
 	VotesProvider  uint16          `json:"votes_provider"`
 	VotesRequester uint16          `json:"votes_requester"`
 	JurySize       uint16          `json:"jury_size"`
-	Deadline       int64           `json:"deadline"`
-	CreatedAt      int64           `json:"created_at"`
-	ResolvedAt     int64           `json:"resolved_at"`
-	Bump           uint8           `json:"bump"`
+	Deadline         int64           `json:"deadline"`
+	CreatedAt        int64           `json:"created_at"`
+	ResolvedAt       int64           `json:"resolved_at"`
+	Bump             uint8           `json:"bump"`
+	CorrectionsCount uint8           `json:"corrections_count"`
 }
 
 // DisputeSize is the on-chain size including Anchor discriminator.
-// 8 + 32 + 32 + 1 + 1 + 32 + 32 + 2 + 2 + 2 + 8 + 8 + 8 + 1 = 169
-const DisputeSize = 8 + 32 + 32 + 1 + 1 + 32 + 32 + 2 + 2 + 2 + 8 + 8 + 8 + 1
+// 8 + 32 + 32 + 1 + 1 + 32 + 32 + 2 + 2 + 2 + 8 + 8 + 8 + 1 + 1 = 170
+const DisputeSize = 8 + 32 + 32 + 1 + 1 + 32 + 32 + 2 + 2 + 2 + 8 + 8 + 8 + 1 + 1
 
 // DecodeDispute parses raw account data (including 8-byte discriminator).
 func DecodeDispute(data []byte) (*Dispute, error) {
@@ -379,6 +380,10 @@ func DecodeDispute(data []byte) (*Dispute, error) {
 	d.ResolvedAt = int64(binary.LittleEndian.Uint64(data[o : o+8]))
 	o += 8
 	d.Bump = data[o]
+	o++
+	if o < len(data) {
+		d.CorrectionsCount = data[o]
+	}
 	return d, nil
 }
 

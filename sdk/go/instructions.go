@@ -499,3 +499,75 @@ func NewResolveDisputeInstruction(
 		DataBytes: data[:],
 	}
 }
+
+// NewRedeliverInDisputeInstruction builds "redeliver_in_dispute" with output_hash and arweave_tx args.
+// The provider signs to re-deliver corrected work during a Level 1 dispute.
+// Accounts: provider (signer, writable), contract (writable), dispute (writable), proof_of_execution (writable).
+func NewRedeliverInDisputeInstruction(
+	programID solana.PublicKey,
+	provider solana.PublicKey,
+	contractPDA solana.PublicKey,
+	disputePDA solana.PublicKey,
+	poePDA solana.PublicKey,
+	outputHash [32]byte,
+	arweaveTx string,
+) solana.Instruction {
+	disc := AnchorDiscriminator("redeliver_in_dispute")
+	// data: 8 disc + 32 hash + 4 strlen + bytes
+	arweaveBytes := []byte(arweaveTx)
+	data := make([]byte, 8+32+4+len(arweaveBytes))
+	copy(data[0:8], disc[:])
+	copy(data[8:40], outputHash[:])
+	binary.LittleEndian.PutUint32(data[40:44], uint32(len(arweaveBytes)))
+	copy(data[44:], arweaveBytes)
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(provider).SIGNER().WRITE(),
+			solana.Meta(contractPDA).WRITE(),
+			solana.Meta(disputePDA).WRITE(),
+			solana.Meta(poePDA).WRITE(),
+		},
+		DataBytes: data,
+	}
+}
+
+// NewAcceptCorrectionInstruction builds "accept_correction" (no extra args).
+// The requester signs to accept a provider's correction during dispute.
+// Resolves dispute + completes contract + releases payment with protocol fee.
+// Accounts: requester, contract, dispute, proof_of_execution, provider_identity,
+//
+//	provider_token_account, treasury_token_account, insurance_vault,
+//	escrow_vault, protocol_config, token_program.
+func NewAcceptCorrectionInstruction(
+	programID solana.PublicKey,
+	requester solana.PublicKey,
+	contractPDA solana.PublicKey,
+	disputePDA solana.PublicKey,
+	poePDA solana.PublicKey,
+	providerIdentityPDA solana.PublicKey,
+	providerTokenAccount solana.PublicKey,
+	treasuryTokenAccount solana.PublicKey,
+	insuranceVault solana.PublicKey,
+	escrowVaultPDA solana.PublicKey,
+	configPDA solana.PublicKey,
+) solana.Instruction {
+	disc := AnchorDiscriminator("accept_correction")
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(requester).SIGNER(),
+			solana.Meta(contractPDA).WRITE(),
+			solana.Meta(disputePDA).WRITE(),
+			solana.Meta(poePDA).WRITE(),
+			solana.Meta(providerIdentityPDA).WRITE(),
+			solana.Meta(providerTokenAccount).WRITE(),
+			solana.Meta(treasuryTokenAccount).WRITE(),
+			solana.Meta(insuranceVault).WRITE(),
+			solana.Meta(escrowVaultPDA).WRITE(),
+			solana.Meta(configPDA),
+			solana.Meta(TokenProgramID),
+		},
+		DataBytes: disc[:],
+	}
+}
