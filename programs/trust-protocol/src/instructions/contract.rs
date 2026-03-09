@@ -207,9 +207,16 @@ pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
         .checked_add(contract.provider_stake)
         .ok_or(TrustError::MathOverflow)?;
 
-    // Build escrow signer seeds
+    // Manually derive escrow PDA bump (removed seeds from account validation to avoid stack overflow)
     let contract_id_bytes = contract.id.to_le_bytes();
-    let escrow_bump = ctx.bumps.escrow_vault;
+    let (expected_escrow, escrow_bump) = Pubkey::find_program_address(
+        &[b"escrow", &contract_id_bytes],
+        ctx.program_id,
+    );
+    require!(
+        ctx.accounts.escrow_vault.key() == expected_escrow,
+        TrustError::InvalidEscrowVault
+    );
     let escrow_seeds: &[&[u8]] = &[b"escrow", &contract_id_bytes, &[escrow_bump]];
     let signer_seeds = &[escrow_seeds];
 
@@ -410,11 +417,9 @@ pub struct AcceptContract<'info> {
     pub insurance_vault: Box<Account<'info, TokenAccount>>,
 
     /// Escrow vault for this contract
-    #[account(
-        mut,
-        seeds = [b"escrow" as &[u8], &contract.id.to_le_bytes()],
-        bump,
-    )]
+    /// NOTE: Seeds validation removed to avoid BPF stack overflow during deserialization.
+    /// The escrow PDA is validated manually in handler_accept via find_program_address.
+    #[account(mut)]
     pub escrow_vault: Box<Account<'info, TokenAccount>>,
 
     #[account(

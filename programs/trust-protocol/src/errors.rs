@@ -44,4 +44,6 @@ pub enum TrustError {
     AlreadyVoted,
     #[msg("Identity bond is soulbound and cannot be transferred")]
     SoulboundViolation,
+    #[msg("Invalid escrow vault PDA")]
+    InvalidEscrowVault,
 }
