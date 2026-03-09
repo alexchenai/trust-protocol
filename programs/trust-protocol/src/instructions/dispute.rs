@@ -820,7 +820,7 @@ pub fn handler_migrate_dispute(ctx: Context<MigrateDisputeSize>) -> Result<()> {
     // Check owner
     require!(
         dispute_info.owner == ctx.program_id,
-        ProgramError::IllegalOwner
+        TrustError::InvalidEscrowVault
     );
 
     let old_len = dispute_info.data_len();
