@@ -110,4 +110,18 @@ pub mod trust_protocol {
     pub fn deny_insurance_claim(ctx: Context<ApproveInsuranceClaim>) -> Result<()> {
         insurance::handler_deny_claim(ctx)
     }
+
+    // === Admin Operations ===
+
+    /// Set up bond vault token account (one-time, after initialize).
+    /// Required before any agent can register.
+    pub fn setup_bond_vault(ctx: Context<SetupBondVault>) -> Result<()> {
+        admin::handler_setup_bond_vault(ctx)
+    }
+
+    /// Update SWORN mint address (v1 -> v2 migration).
+    /// Admin only (Phase 0-2 governance).
+    pub fn update_sworn_mint(ctx: Context<UpdateSwornMint>) -> Result<()> {
+        admin::handler_update_sworn_mint(ctx)
+    }
 }
