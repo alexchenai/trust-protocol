@@ -56,4 +56,6 @@ pub enum TrustError {
     CurrencyMismatchSol,
     #[msg("Currency mismatch: operation requires SWORN-denominated contract")]
     CurrencyMismatchSworn,
+    #[msg("Maximum corrections reached (3). Dispute auto-escalated to Level 2.")]
+    MaxCorrectionsReached,
 }

@@ -169,6 +169,8 @@ pub struct Dispute {
     pub resolved_at: i64,
     /// Bump seed
     pub bump: u8,
+    /// Number of corrections attempted (max 3 before auto-escalate to L2)
+    pub corrections_count: u8,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace)]

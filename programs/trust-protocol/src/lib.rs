@@ -108,6 +108,18 @@ pub mod trust_protocol {
         dispute::handler_resolve(ctx, provider_wins)
     }
 
+    /// Provider re-delivers corrected work during Level 1 dispute.
+    /// Max 3 corrections before auto-escalation to Level 2 (PrivateRounds).
+    pub fn redeliver_in_dispute(ctx: Context<RedeliverInDispute>, output_hash: [u8; 32], arweave_tx: String) -> Result<()> {
+        dispute::handler_redeliver(ctx, output_hash, arweave_tx)
+    }
+
+    /// Requester accepts provider's correction during dispute.
+    /// Resolves dispute + completes contract (releases payment).
+    pub fn accept_correction(ctx: Context<AcceptCorrection>) -> Result<()> {
+        dispute::handler_accept_correction(ctx)
+    }
+
     // === Insurance Pool (Whitepaper Section 6) ===
 
     /// File retroactive claim within 90-day window. Max 80% of contract value.

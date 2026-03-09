@@ -2,6 +2,7 @@ use crate::errors::TrustError;
 use crate::state::*;
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Burn, Mint, Token, TokenAccount, Transfer};
+use anchor_lang::solana_program::pubkey::Pubkey;
 
 /// Initiate a dispute on a delivered contract.
 /// Whitepaper Section 5: Dispute Resolution - starts at Level 1 (Direct Correction).
@@ -34,6 +35,7 @@ pub fn handler_initiate(ctx: Context<InitiateDispute>, evidence_hash: [u8; 32]) 
     dispute.deadline = dispute.created_at + 7 * 86_400;
     dispute.resolved_at = 0;
     dispute.bump = ctx.bumps.dispute;
+    dispute.corrections_count = 0;
 
     msg!(
         "Dispute initiated on contract #{}. Level: DirectCorrection. Deadline: {}",
@@ -189,9 +191,16 @@ pub fn handler_resolve(ctx: Context<ResolveDispute>, provider_wins: bool) -> Res
     ctx.accounts.dispute.resolved_at = now;
     ctx.accounts.contract.resolved_at = now;
 
-    // Save values we need before multiple borrows
+    // Manually derive escrow PDA bump (seeds removed from struct to avoid BPF stack overflow)
     let contract_id_bytes = ctx.accounts.contract.id.to_le_bytes();
-    let escrow_bump = ctx.bumps.escrow_vault;
+    let (expected_escrow, escrow_bump) = Pubkey::find_program_address(
+        &[b"escrow", &contract_id_bytes],
+        ctx.program_id,
+    );
+    require!(
+        ctx.accounts.escrow_vault.key() == expected_escrow,
+        TrustError::InvalidEscrowVault
+    );
     let escrow_seeds: &[&[u8]] = &[b"escrow", &contract_id_bytes, &[escrow_bump]];
     let signer_seeds = &[escrow_seeds];
 
@@ -398,12 +407,323 @@ pub struct JuryVote<'info> {
     pub juror_identity: Account<'info, AgentIdentity>,
 }
 
+/// ResolveDispute uses Box<Account> to avoid BPF stack overflow.
+/// escrow_vault seeds removed — validated manually in handler (same fix as AcceptContract).
 #[derive(Accounts)]
 pub struct ResolveDispute<'info> {
     #[account(mut)]
     pub resolver: Signer<'info>,
 
     #[account(mut)]
+    pub contract: Box<Account<'info, Contract>>,
+
+    #[account(
+        mut,
+        seeds = [b"dispute" as &[u8], contract.key().as_ref()],
+        bump = dispute.bump,
+    )]
+    pub dispute: Box<Account<'info, Dispute>>,
+
+    #[account(
+        mut,
+        seeds = [b"agent-identity" as &[u8], contract.provider.as_ref()],
+        bump = provider_identity.bump,
+    )]
+    pub provider_identity: Box<Account<'info, AgentIdentity>>,
+
+    #[account(
+        mut,
+        seeds = [b"agent-identity" as &[u8], contract.requester.as_ref()],
+        bump = requester_identity.bump,
+    )]
+    pub requester_identity: Box<Account<'info, AgentIdentity>>,
+
+    #[account(
+        mut,
+        constraint = provider_token_account.owner == contract.provider,
+    )]
+    pub provider_token_account: Box<Account<'info, TokenAccount>>,
+
+    #[account(
+        mut,
+        constraint = requester_token_account.owner == contract.requester,
+    )]
+    pub requester_token_account: Box<Account<'info, TokenAccount>>,
+
+    /// Escrow vault — seeds validated manually in handler to avoid stack overflow
+    #[account(mut)]
+    pub escrow_vault: Box<Account<'info, TokenAccount>>,
+
+    #[account(
+        mut,
+        seeds = [b"insurance-pool"],
+        bump = insurance_pool.bump,
+    )]
+    pub insurance_pool: Box<Account<'info, InsurancePool>>,
+
+    /// Insurance pool token vault
+    #[account(mut)]
+    pub insurance_vault: Box<Account<'info, TokenAccount>>,
+
+    #[account(
+        mut,
+        constraint = sworn_mint.key() == protocol_config.sworn_mint,
+    )]
+    pub sworn_mint: Box<Account<'info, Mint>>,
+
+    #[account(
+        seeds = [b"protocol-config"],
+        bump = protocol_config.bump,
+    )]
+    pub protocol_config: Box<Account<'info, ProtocolConfig>>,
+
+    pub token_program: Program<'info, Token>,
+}
+
+// ---------------------------------------------------------------------------
+// Level 1: Provider re-delivers corrected work during dispute
+// ---------------------------------------------------------------------------
+
+/// Provider re-delivers corrected work during a Level 1 (DirectCorrection) dispute.
+/// Updates the PoE hash and increments corrections_count.
+/// After 3 corrections, auto-escalates to Level 2 (PrivateRounds).
+/// Whitepaper Section 5.1: Level 1 Direct Correction flow.
+pub fn handler_redeliver(
+    ctx: Context<RedeliverInDispute>,
+    output_hash: [u8; 32],
+    arweave_tx: String,
+) -> Result<()> {
+    let dispute = &mut ctx.accounts.dispute;
+
+    require!(
+        dispute.level == DisputeLevel::DirectCorrection,
+        TrustError::InvalidContractStatus
+    );
+    require!(
+        dispute.status == DisputeStatus::Open || dispute.status == DisputeStatus::Responded,
+        TrustError::InvalidContractStatus
+    );
+
+    let contract = &mut ctx.accounts.contract;
+    require!(
+        contract.provider == ctx.accounts.provider.key(),
+        TrustError::UnauthorizedProvider
+    );
+
+    let now = Clock::get()?.unix_timestamp;
+
+    // Update contract PoE hash
+    contract.poe_hash = output_hash;
+    contract.poe_arweave_tx = arweave_tx.clone();
+    // Return contract to Delivered so requester can review
+    contract.status = ContractStatus::Delivered;
+
+    // Update the PoE record
+    let poe = &mut ctx.accounts.proof_of_execution;
+    poe.output_hash = output_hash;
+    poe.arweave_tx = arweave_tx;
+    poe.submitted_at = now;
+    poe.validated = false;
+
+    // Increment corrections count
+    dispute.corrections_count = dispute.corrections_count.saturating_add(1);
+
+    if dispute.corrections_count >= 3 {
+        // Auto-escalate to Level 2 (PrivateRounds)
+        dispute.level = DisputeLevel::PrivateRounds;
+        dispute.status = DisputeStatus::Open;
+        contract.dispute_level = 2;
+        // 5-day deadline for private rounds
+        dispute.deadline = now + 5 * 86_400;
+
+        msg!(
+            "Contract #{}: 3 corrections exhausted. Auto-escalated to Level 2 (PrivateRounds). Deadline: {}",
+            contract.id,
+            dispute.deadline
+        );
+    } else {
+        // Reset deadline for requester review (7 days)
+        dispute.status = DisputeStatus::Open;
+        dispute.deadline = now + 7 * 86_400;
+
+        msg!(
+            "Contract #{}: Re-delivery #{} submitted. Awaiting requester review. Deadline: {}",
+            contract.id,
+            dispute.corrections_count,
+            dispute.deadline
+        );
+    }
+
+    Ok(())
+}
+
+/// Requester accepts provider's correction during L1 or L2 dispute.
+/// Resolves dispute + completes contract + releases payment (same as accept_contract).
+/// Whitepaper Section 5.1: Requester accepts correction → dispute resolved.
+pub fn handler_accept_correction(ctx: Context<AcceptCorrection>) -> Result<()> {
+    let contract = &mut ctx.accounts.contract;
+    require!(
+        contract.status == ContractStatus::Delivered,
+        TrustError::InvalidContractStatus
+    );
+    require!(
+        contract.requester == ctx.accounts.requester.key(),
+        TrustError::UnauthorizedRequester
+    );
+
+    let dispute = &mut ctx.accounts.dispute;
+    require!(
+        dispute.level == DisputeLevel::DirectCorrection
+            || dispute.level == DisputeLevel::PrivateRounds,
+        TrustError::InvalidContractStatus
+    );
+
+    let now = Clock::get()?.unix_timestamp;
+
+    // Resolve the dispute
+    dispute.status = DisputeStatus::ResolvedProvider;
+    dispute.resolved_at = now;
+
+    // Complete the contract
+    contract.status = ContractStatus::Completed;
+    contract.resolved_at = now;
+
+    // Mark PoE as validated
+    let poe = &mut ctx.accounts.proof_of_execution;
+    poe.validated = true;
+
+    // Update provider stats
+    let provider_identity = &mut ctx.accounts.provider_identity;
+    provider_identity.tasks_completed = provider_identity.tasks_completed.saturating_add(1);
+    provider_identity.volume_processed = provider_identity
+        .volume_processed
+        .saturating_add(contract.value);
+
+    // Extract values before releasing mutable borrow for payment logic
+    let contract_value = contract.value;
+    let contract_provider_stake = contract.provider_stake;
+    let contract_currency = contract.currency;
+    let contract_id_val = contract.id;
+
+    // Calculate protocol fee: 1% of contract value (Whitepaper Section 11.8)
+    // Split: 70% treasury, 20% insurance pool, 10% burn (burn goes to insurance for now)
+    let protocol_fee = contract_value / 100; // 1%
+    let fee_treasury = protocol_fee * 70 / 100;
+    let fee_insurance_and_burn = protocol_fee.saturating_sub(fee_treasury); // 30%
+
+    // Net payment to provider = contract value - protocol fee + stake return
+    let net_payment = contract_value.saturating_sub(protocol_fee);
+    let provider_release = net_payment
+        .checked_add(contract_provider_stake)
+        .ok_or(TrustError::MathOverflow)?;
+
+    if contract_currency == Currency::Sol {
+        // SOL-denominated contract: transfer lamports from contract PDA
+        let contract_info = ctx.accounts.contract.to_account_info();
+        let provider_info = ctx.accounts.provider_token_account.to_account_info();
+        let treasury_info = ctx.accounts.treasury_token_account.to_account_info();
+        let insurance_info = ctx.accounts.insurance_vault.to_account_info();
+
+        // Transfer net payment + stake to provider
+        **contract_info.try_borrow_mut_lamports()? -= provider_release;
+        **provider_info.try_borrow_mut_lamports()? += provider_release;
+
+        // Transfer treasury fee
+        if fee_treasury > 0 {
+            **contract_info.try_borrow_mut_lamports()? -= fee_treasury;
+            **treasury_info.try_borrow_mut_lamports()? += fee_treasury;
+        }
+
+        // Transfer insurance+burn portion
+        if fee_insurance_and_burn > 0 {
+            **contract_info.try_borrow_mut_lamports()? -= fee_insurance_and_burn;
+            **insurance_info.try_borrow_mut_lamports()? += fee_insurance_and_burn;
+        }
+    } else {
+        // SWORN-denominated contract: SPL token transfers via escrow PDA
+        // Manually derive escrow PDA bump to avoid BPF stack overflow
+        let contract_id_bytes = contract_id_val.to_le_bytes();
+        let (expected_escrow, escrow_bump) = Pubkey::find_program_address(
+            &[b"escrow", &contract_id_bytes],
+            ctx.program_id,
+        );
+        require!(
+            ctx.accounts.escrow_vault.key() == expected_escrow,
+            TrustError::InvalidEscrowVault
+        );
+        let escrow_seeds: &[&[u8]] = &[b"escrow", &contract_id_bytes, &[escrow_bump]];
+        let signer_seeds = &[escrow_seeds];
+
+        // CPI 1: Transfer net payment + stake to provider
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.escrow_vault.to_account_info(),
+                    to: ctx.accounts.provider_token_account.to_account_info(),
+                    authority: ctx.accounts.escrow_vault.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            provider_release,
+        )?;
+
+        // CPI 2: Transfer treasury fee to admin
+        if fee_treasury > 0 {
+            token::transfer(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    Transfer {
+                        from: ctx.accounts.escrow_vault.to_account_info(),
+                        to: ctx.accounts.treasury_token_account.to_account_info(),
+                        authority: ctx.accounts.escrow_vault.to_account_info(),
+                    },
+                    signer_seeds,
+                ),
+                fee_treasury,
+            )?;
+        }
+
+        // CPI 3: Transfer insurance+burn portion to insurance vault
+        if fee_insurance_and_burn > 0 {
+            token::transfer(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    Transfer {
+                        from: ctx.accounts.escrow_vault.to_account_info(),
+                        to: ctx.accounts.insurance_vault.to_account_info(),
+                        authority: ctx.accounts.escrow_vault.to_account_info(),
+                    },
+                    signer_seeds,
+                ),
+                fee_insurance_and_burn,
+            )?;
+        }
+    }
+
+    msg!(
+        "Contract #{} completed via dispute correction. Currency: {:?}. Provider: {} net. Fee: {} (treasury: {}, pool: {}). Corrections: {}",
+        contract_id_val,
+        contract_currency,
+        provider_release,
+        protocol_fee,
+        fee_treasury,
+        fee_insurance_and_burn,
+        dispute.corrections_count
+    );
+    Ok(())
+}
+
+#[derive(Accounts)]
+pub struct RedeliverInDispute<'info> {
+    #[account(mut)]
+    pub provider: Signer<'info>,
+
+    #[account(
+        mut,
+        constraint = contract.provider == provider.key() @ TrustError::UnauthorizedProvider,
+        constraint = contract.status == ContractStatus::Disputed @ TrustError::InvalidContractStatus,
+    )]
     pub contract: Account<'info, Contract>,
 
     #[account(
@@ -415,59 +735,66 @@ pub struct ResolveDispute<'info> {
 
     #[account(
         mut,
-        seeds = [b"agent-identity" as &[u8], contract.provider.as_ref()],
-        bump = provider_identity.bump,
+        seeds = [b"poe" as &[u8], contract.key().as_ref()],
+        bump = proof_of_execution.bump,
     )]
-    pub provider_identity: Account<'info, AgentIdentity>,
+    pub proof_of_execution: Account<'info, ProofOfExecution>,
+}
+
+#[derive(Accounts)]
+pub struct AcceptCorrection<'info> {
+    pub requester: Signer<'info>,
 
     #[account(
         mut,
-        seeds = [b"agent-identity" as &[u8], contract.requester.as_ref()],
-        bump = requester_identity.bump,
+        constraint = contract.requester == requester.key() @ TrustError::UnauthorizedRequester,
     )]
-    pub requester_identity: Account<'info, AgentIdentity>,
+    pub contract: Box<Account<'info, Contract>>,
+
+    #[account(
+        mut,
+        seeds = [b"dispute" as &[u8], contract.key().as_ref()],
+        bump = dispute.bump,
+    )]
+    pub dispute: Box<Account<'info, Dispute>>,
+
+    #[account(
+        mut,
+        seeds = [b"poe" as &[u8], contract.key().as_ref()],
+        bump = proof_of_execution.bump,
+    )]
+    pub proof_of_execution: Box<Account<'info, ProofOfExecution>>,
+
+    #[account(
+        mut,
+        seeds = [b"agent-identity" as &[u8], contract.provider.as_ref()],
+        bump = provider_identity.bump,
+    )]
+    pub provider_identity: Box<Account<'info, AgentIdentity>>,
 
     #[account(
         mut,
         constraint = provider_token_account.owner == contract.provider,
     )]
-    pub provider_token_account: Account<'info, TokenAccount>,
+    pub provider_token_account: Box<Account<'info, TokenAccount>>,
 
     #[account(
         mut,
-        constraint = requester_token_account.owner == contract.requester,
+        constraint = treasury_token_account.owner == protocol_config.admin,
     )]
-    pub requester_token_account: Account<'info, TokenAccount>,
+    pub treasury_token_account: Box<Account<'info, TokenAccount>>,
 
-    #[account(
-        mut,
-        seeds = [b"escrow" as &[u8], &contract.id.to_le_bytes()],
-        bump,
-    )]
-    pub escrow_vault: Account<'info, TokenAccount>,
-
-    #[account(
-        mut,
-        seeds = [b"insurance-pool"],
-        bump = insurance_pool.bump,
-    )]
-    pub insurance_pool: Account<'info, InsurancePool>,
-
-    /// Insurance pool token vault
     #[account(mut)]
-    pub insurance_vault: Account<'info, TokenAccount>,
+    pub insurance_vault: Box<Account<'info, TokenAccount>>,
 
-    #[account(
-        mut,
-        constraint = sworn_mint.key() == protocol_config.sworn_mint,
-    )]
-    pub sworn_mint: Account<'info, Mint>,
+    #[account(mut)]
+    pub escrow_vault: Box<Account<'info, TokenAccount>>,
 
     #[account(
         seeds = [b"protocol-config"],
         bump = protocol_config.bump,
     )]
-    pub protocol_config: Account<'info, ProtocolConfig>,
+    pub protocol_config: Box<Account<'info, ProtocolConfig>>,
 
     pub token_program: Program<'info, Token>,
 }
