@@ -345,8 +345,10 @@ type Dispute struct {
 }
 
 // DisputeSize is the on-chain size including Anchor discriminator.
-// 8 + 32 + 32 + 1 + 1 + 32 + 32 + 2 + 2 + 2 + 8 + 8 + 8 + 1 + 1 = 170
-const DisputeSize = 8 + 32 + 32 + 1 + 1 + 32 + 32 + 2 + 2 + 2 + 8 + 8 + 8 + 1 + 1
+// v0.1.6: 8 + 32 + 32 + 1 + 1 + 32 + 32 + 2 + 2 + 2 + 8 + 8 + 8 + 1 = 169
+// v0.1.7: + 1 (corrections_count) = 170
+// Use 169 as minimum for backward compatibility with pre-deploy accounts.
+const DisputeSize = 8 + 32 + 32 + 1 + 1 + 32 + 32 + 2 + 2 + 2 + 8 + 8 + 8 + 1
 
 // DecodeDispute parses raw account data (including 8-byte discriminator).
 func DecodeDispute(data []byte) (*Dispute, error) {
