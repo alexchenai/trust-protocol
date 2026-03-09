@@ -270,6 +270,118 @@ func DecodeContract(data []byte) (*Contract, error) {
 	return c, nil
 }
 
+// DisputeLevel represents the 4-level dispute escalation path.
+type DisputeLevel uint8
+
+const (
+	DisputeLevelDirectCorrection DisputeLevel = 0
+	DisputeLevelPrivateRounds    DisputeLevel = 1
+	DisputeLevelPublicJury       DisputeLevel = 2
+	DisputeLevelAppeal           DisputeLevel = 3
+)
+
+func (d DisputeLevel) String() string {
+	switch d {
+	case DisputeLevelDirectCorrection:
+		return "DirectCorrection"
+	case DisputeLevelPrivateRounds:
+		return "PrivateRounds"
+	case DisputeLevelPublicJury:
+		return "PublicJury"
+	case DisputeLevelAppeal:
+		return "Appeal"
+	default:
+		return fmt.Sprintf("Unknown(%d)", d)
+	}
+}
+
+// DisputeStatus represents the current state of a dispute.
+type DisputeStatus uint8
+
+const (
+	DisputeStatusOpen             DisputeStatus = 0
+	DisputeStatusResponded        DisputeStatus = 1
+	DisputeStatusVoting           DisputeStatus = 2
+	DisputeStatusResolvedProvider DisputeStatus = 3
+	DisputeStatusResolvedRequester DisputeStatus = 4
+	DisputeStatusEscalated        DisputeStatus = 5
+)
+
+func (d DisputeStatus) String() string {
+	switch d {
+	case DisputeStatusOpen:
+		return "Open"
+	case DisputeStatusResponded:
+		return "Responded"
+	case DisputeStatusVoting:
+		return "Voting"
+	case DisputeStatusResolvedProvider:
+		return "ResolvedProvider"
+	case DisputeStatusResolvedRequester:
+		return "ResolvedRequester"
+	case DisputeStatusEscalated:
+		return "Escalated"
+	default:
+		return fmt.Sprintf("Unknown(%d)", d)
+	}
+}
+
+// Dispute represents an on-chain dispute account.
+type Dispute struct {
+	Contract       solana.PublicKey `json:"contract"`
+	Initiator      solana.PublicKey `json:"initiator"`
+	Level          DisputeLevel    `json:"level"`
+	Status         DisputeStatus   `json:"status"`
+	EvidenceHash   [32]byte        `json:"evidence_hash"`
+	ResponseHash   [32]byte        `json:"response_hash"`
+	VotesProvider  uint16          `json:"votes_provider"`
+	VotesRequester uint16          `json:"votes_requester"`
+	JurySize       uint16          `json:"jury_size"`
+	Deadline       int64           `json:"deadline"`
+	CreatedAt      int64           `json:"created_at"`
+	ResolvedAt     int64           `json:"resolved_at"`
+	Bump           uint8           `json:"bump"`
+}
+
+// DisputeSize is the on-chain size including Anchor discriminator.
+// 8 + 32 + 32 + 1 + 1 + 32 + 32 + 2 + 2 + 2 + 8 + 8 + 8 + 1 = 169
+const DisputeSize = 8 + 32 + 32 + 1 + 1 + 32 + 32 + 2 + 2 + 2 + 8 + 8 + 8 + 1
+
+// DecodeDispute parses raw account data (including 8-byte discriminator).
+func DecodeDispute(data []byte) (*Dispute, error) {
+	if len(data) < DisputeSize {
+		return nil, fmt.Errorf("dispute data too short: %d < %d", len(data), DisputeSize)
+	}
+	o := 8 // skip discriminator
+	d := &Dispute{}
+	d.Contract = solana.PublicKeyFromBytes(data[o : o+32])
+	o += 32
+	d.Initiator = solana.PublicKeyFromBytes(data[o : o+32])
+	o += 32
+	d.Level = DisputeLevel(data[o])
+	o++
+	d.Status = DisputeStatus(data[o])
+	o++
+	copy(d.EvidenceHash[:], data[o:o+32])
+	o += 32
+	copy(d.ResponseHash[:], data[o:o+32])
+	o += 32
+	d.VotesProvider = binary.LittleEndian.Uint16(data[o : o+2])
+	o += 2
+	d.VotesRequester = binary.LittleEndian.Uint16(data[o : o+2])
+	o += 2
+	d.JurySize = binary.LittleEndian.Uint16(data[o : o+2])
+	o += 2
+	d.Deadline = int64(binary.LittleEndian.Uint64(data[o : o+8]))
+	o += 8
+	d.CreatedAt = int64(binary.LittleEndian.Uint64(data[o : o+8]))
+	o += 8
+	d.ResolvedAt = int64(binary.LittleEndian.Uint64(data[o : o+8]))
+	o += 8
+	d.Bump = data[o]
+	return d, nil
+}
+
 // ProofOfExecution represents an on-chain PoE record with input/output hashes.
 type ProofOfExecution struct {
 	Contract    solana.PublicKey `json:"contract"`

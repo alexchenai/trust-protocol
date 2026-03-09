@@ -429,3 +429,73 @@ func NewRespondDisputeInstruction(
 		DataBytes: data[:],
 	}
 }
+
+// NewEscalateDisputeInstruction builds "escalate_dispute" (no extra args).
+// The initiator signs to escalate a dispute to the next level.
+// Accounts: initiator (signer), contract (writable), dispute (writable).
+func NewEscalateDisputeInstruction(
+	programID solana.PublicKey,
+	initiator solana.PublicKey,
+	contractPDA solana.PublicKey,
+	disputePDA solana.PublicKey,
+) solana.Instruction {
+	disc := AnchorDiscriminator("escalate_dispute")
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(initiator).SIGNER(),
+			solana.Meta(contractPDA).WRITE(),
+			solana.Meta(disputePDA).WRITE(),
+		},
+		DataBytes: disc[:],
+	}
+}
+
+// NewResolveDisputeInstruction builds "resolve_dispute" with provider_wins bool arg.
+// The resolver signs. Confiscated stakes: 15% burned, 60% insurance, 25% winner.
+// Accounts: resolver, contract, dispute, provider_identity, requester_identity,
+//
+//	provider_token_account, requester_token_account, escrow_vault,
+//	insurance_pool, insurance_vault, sworn_mint, protocol_config, token_program.
+func NewResolveDisputeInstruction(
+	programID solana.PublicKey,
+	resolver solana.PublicKey,
+	contractPDA solana.PublicKey,
+	disputePDA solana.PublicKey,
+	providerIdentityPDA solana.PublicKey,
+	requesterIdentityPDA solana.PublicKey,
+	providerTokenAccount solana.PublicKey,
+	requesterTokenAccount solana.PublicKey,
+	escrowVaultPDA solana.PublicKey,
+	insurancePoolPDA solana.PublicKey,
+	insuranceVaultAccount solana.PublicKey,
+	swornMint solana.PublicKey,
+	configPDA solana.PublicKey,
+	providerWins bool,
+) solana.Instruction {
+	disc := AnchorDiscriminator("resolve_dispute")
+	var data [9]byte
+	copy(data[0:8], disc[:])
+	if providerWins {
+		data[8] = 1
+	}
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(resolver).SIGNER().WRITE(),
+			solana.Meta(contractPDA).WRITE(),
+			solana.Meta(disputePDA).WRITE(),
+			solana.Meta(providerIdentityPDA).WRITE(),
+			solana.Meta(requesterIdentityPDA).WRITE(),
+			solana.Meta(providerTokenAccount).WRITE(),
+			solana.Meta(requesterTokenAccount).WRITE(),
+			solana.Meta(escrowVaultPDA).WRITE(),
+			solana.Meta(insurancePoolPDA).WRITE(),
+			solana.Meta(insuranceVaultAccount).WRITE(),
+			solana.Meta(swornMint).WRITE(),
+			solana.Meta(configPDA),
+			solana.Meta(TokenProgramID),
+		},
+		DataBytes: data[:],
+	}
+}
