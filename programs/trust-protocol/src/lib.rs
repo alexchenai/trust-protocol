@@ -125,6 +125,12 @@ pub mod trust_protocol {
         admin::handler_update_sworn_mint(ctx)
     }
 
+    /// Migrate bond vault: close old (v1) vault, create new (v2) vault, update config.
+    /// Drains old tokens to admin, closes account, inits new vault with new mint.
+    pub fn migrate_bond_vault(ctx: Context<MigrateBondVault>) -> Result<()> {
+        admin::handler_migrate_bond_vault(ctx)
+    }
+
     /// Force-mature an agent (devnet testing only).
     /// Bypasses 30-day maturation period for testing contract lifecycle.
     pub fn force_mature(ctx: Context<ForceMatureAgent>) -> Result<()> {
