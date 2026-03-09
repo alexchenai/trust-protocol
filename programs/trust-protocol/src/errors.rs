@@ -58,4 +58,6 @@ pub enum TrustError {
     CurrencyMismatchSworn,
     #[msg("Maximum corrections reached (3). Dispute auto-escalated to Level 2.")]
     MaxCorrectionsReached,
+    #[msg("Destination account does not match expected recipient")]
+    InvalidDestination,
 }

@@ -218,8 +218,15 @@ pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
 
     if contract_currency == Currency::Sol {
         // SOL-denominated contract: transfer lamports from contract PDA
-        // For SOL contracts, the client passes system accounts (not token accounts)
-        // for provider_token_account, treasury_token_account, and insurance_vault.
+        // Validate destinations: provider wallet, admin wallet
+        require!(
+            ctx.accounts.provider_token_account.key() == contract.provider,
+            TrustError::InvalidDestination
+        );
+        require!(
+            ctx.accounts.treasury_token_account.key() == ctx.accounts.protocol_config.admin,
+            TrustError::InvalidDestination
+        );
         let contract_info = ctx.accounts.contract.to_account_info();
         let provider_info = ctx.accounts.provider_token_account.to_account_info();
         let treasury_info = ctx.accounts.treasury_token_account.to_account_info();
@@ -430,34 +437,25 @@ pub struct AcceptContract<'info> {
     )]
     pub provider_identity: Box<Account<'info, AgentIdentity>>,
 
-    /// Provider's SWORN token account (receives payment + stake return)
-    #[account(
-        mut,
-        constraint = provider_token_account.owner == contract.provider,
-        constraint = provider_token_account.mint == protocol_config.sworn_mint,
-    )]
-    pub provider_token_account: Box<Account<'info, TokenAccount>>,
-
-    /// Treasury token account (receives 70% of protocol fee)
-    #[account(
-        mut,
-        constraint = treasury_token_account.owner == protocol_config.admin,
-        constraint = treasury_token_account.mint == protocol_config.sworn_mint,
-    )]
-    pub treasury_token_account: Box<Account<'info, TokenAccount>>,
-
-    /// Insurance pool vault (receives 20% of protocol fee + 10% burn)
-    #[account(
-        mut,
-        constraint = insurance_vault.mint == protocol_config.sworn_mint,
-    )]
-    pub insurance_vault: Box<Account<'info, TokenAccount>>,
-
-    /// Escrow vault for this contract
-    /// NOTE: Seeds validation removed to avoid BPF stack overflow during deserialization.
-    /// The escrow PDA is validated manually in handler_accept via find_program_address.
+    /// For SWORN: provider's ATA. For SOL: provider's wallet (system account).
+    /// CHECK: For SOL, validated key == contract.provider. For SWORN, token CPI validates.
     #[account(mut)]
-    pub escrow_vault: Box<Account<'info, TokenAccount>>,
+    pub provider_token_account: UncheckedAccount<'info>,
+
+    /// For SWORN: admin's ATA. For SOL: admin's wallet (system account).
+    /// CHECK: For SOL, validated key == config.admin. For SWORN, token CPI validates.
+    #[account(mut)]
+    pub treasury_token_account: UncheckedAccount<'info>,
+
+    /// For SWORN: insurance vault ATA. For SOL: pool authority PDA.
+    /// CHECK: Validated in handler based on currency.
+    #[account(mut)]
+    pub insurance_vault: UncheckedAccount<'info>,
+
+    /// Escrow vault PDA for SWORN contracts. Unused for SOL.
+    /// CHECK: Validated manually in handler via find_program_address for SWORN path.
+    #[account(mut)]
+    pub escrow_vault: UncheckedAccount<'info>,
 
     #[account(
         seeds = [b"protocol-config"],

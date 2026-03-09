@@ -1,7 +1,7 @@
 use crate::errors::TrustError;
 use crate::state::*;
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Burn, Mint, Token, TokenAccount, Transfer};
+use anchor_spl::token::{self, Burn, Token, Transfer};
 use anchor_lang::solana_program::pubkey::Pubkey;
 
 /// Initiate a dispute on a delivered contract.
@@ -204,130 +204,157 @@ pub fn handler_resolve(ctx: Context<ResolveDispute>, provider_wins: bool) -> Res
     let escrow_seeds: &[&[u8]] = &[b"escrow", &contract_id_bytes, &[escrow_bump]];
     let signer_seeds = &[escrow_seeds];
 
-    if final_provider_wins {
-        ctx.accounts.dispute.status = DisputeStatus::ResolvedProvider;
-        ctx.accounts.contract.status = ContractStatus::ResolvedProvider;
+    let is_sol = ctx.accounts.contract.currency == Currency::Sol;
 
-        // Provider gets payment + stake back (same as accept)
-        let total = ctx
-            .accounts
-            .contract
-            .value
-            .checked_add(ctx.accounts.contract.provider_stake)
-            .ok_or(TrustError::MathOverflow)?;
-
-        let transfer_ctx = CpiContext::new_with_signer(
-            ctx.accounts.token_program.to_account_info(),
-            Transfer {
-                from: ctx.accounts.escrow_vault.to_account_info(),
-                to: ctx.accounts.provider_token_account.to_account_info(),
-                authority: ctx.accounts.escrow_vault.to_account_info(),
-            },
-            signer_seeds,
+    if is_sol {
+        // SOL-denominated dispute resolution: lamport manipulation from contract PDA
+        // Validate destinations
+        require!(
+            ctx.accounts.provider_token_account.key() == ctx.accounts.contract.provider,
+            TrustError::InvalidDestination
         );
-        token::transfer(transfer_ctx, total)?;
+        require!(
+            ctx.accounts.requester_token_account.key() == ctx.accounts.contract.requester,
+            TrustError::InvalidDestination
+        );
 
-        // Update requester stats (lost dispute)
-        ctx.accounts.requester_identity.disputes_lost = ctx
-            .accounts
-            .requester_identity
-            .disputes_lost
-            .saturating_add(1);
+        if final_provider_wins {
+            ctx.accounts.dispute.status = DisputeStatus::ResolvedProvider;
+            ctx.accounts.contract.status = ContractStatus::ResolvedProvider;
 
-        // Update provider stats (won dispute)
-        ctx.accounts.provider_identity.disputes_won = ctx
-            .accounts
-            .provider_identity
-            .disputes_won
-            .saturating_add(1);
+            let total = ctx.accounts.contract.value
+                .checked_add(ctx.accounts.contract.provider_stake)
+                .ok_or(TrustError::MathOverflow)?;
 
-        msg!("Dispute resolved: PROVIDER wins. {} SWORN released.", total);
+            let contract_info = ctx.accounts.contract.to_account_info();
+            let provider_info = ctx.accounts.provider_token_account.to_account_info();
+            **contract_info.try_borrow_mut_lamports()? -= total;
+            **provider_info.try_borrow_mut_lamports()? += total;
+
+            ctx.accounts.requester_identity.disputes_lost = ctx.accounts.requester_identity.disputes_lost.saturating_add(1);
+            ctx.accounts.provider_identity.disputes_won = ctx.accounts.provider_identity.disputes_won.saturating_add(1);
+            msg!("Dispute resolved (SOL): PROVIDER wins. {} lamports released.", total);
+        } else {
+            ctx.accounts.dispute.status = DisputeStatus::ResolvedRequester;
+            ctx.accounts.contract.status = ContractStatus::ResolvedRequester;
+
+            let confiscated = ctx.accounts.contract.provider_stake;
+            let contract_value = ctx.accounts.contract.value;
+            let burn_rate_bps = ctx.accounts.protocol_config.burn_rate_bps;
+            let insurance_rate_bps = ctx.accounts.protocol_config.insurance_rate_bps;
+            let burn_amount = (confiscated as u128 * burn_rate_bps as u128 / 10_000) as u64;
+            let insurance_amount = (confiscated as u128 * insurance_rate_bps as u128 / 10_000) as u64;
+            let winner_amount = confiscated.saturating_sub(burn_amount).saturating_sub(insurance_amount);
+
+            // For SOL: burn portion goes to insurance (can't burn SOL)
+            let total_insurance = insurance_amount.checked_add(burn_amount).ok_or(TrustError::MathOverflow)?;
+            let refund = contract_value.checked_add(winner_amount).ok_or(TrustError::MathOverflow)?;
+
+            let contract_info = ctx.accounts.contract.to_account_info();
+            let requester_info = ctx.accounts.requester_token_account.to_account_info();
+            let insurance_info = ctx.accounts.insurance_vault.to_account_info();
+
+            **contract_info.try_borrow_mut_lamports()? -= refund;
+            **requester_info.try_borrow_mut_lamports()? += refund;
+
+            if total_insurance > 0 {
+                **contract_info.try_borrow_mut_lamports()? -= total_insurance;
+                **insurance_info.try_borrow_mut_lamports()? += total_insurance;
+                ctx.accounts.insurance_pool.total_balance = ctx.accounts.insurance_pool.total_balance.saturating_add(total_insurance);
+            }
+
+            ctx.accounts.provider_identity.disputes_lost = ctx.accounts.provider_identity.disputes_lost.saturating_add(1);
+            ctx.accounts.requester_identity.disputes_won = ctx.accounts.requester_identity.disputes_won.saturating_add(1);
+            msg!("Dispute resolved (SOL): REQUESTER wins. Confiscated: {}, Insurance: {}, Winner: {}", confiscated, total_insurance, winner_amount);
+        }
     } else {
-        ctx.accounts.dispute.status = DisputeStatus::ResolvedRequester;
-        ctx.accounts.contract.status = ContractStatus::ResolvedRequester;
+        // SWORN-denominated dispute resolution: SPL token transfers via escrow PDA
+        if final_provider_wins {
+            ctx.accounts.dispute.status = DisputeStatus::ResolvedProvider;
+            ctx.accounts.contract.status = ContractStatus::ResolvedProvider;
 
-        // Confiscate provider's stake
-        let confiscated = ctx.accounts.contract.provider_stake;
-        let contract_value = ctx.accounts.contract.value;
+            let total = ctx.accounts.contract.value
+                .checked_add(ctx.accounts.contract.provider_stake)
+                .ok_or(TrustError::MathOverflow)?;
 
-        // 15% burned (deflationary)
-        let burn_rate_bps = ctx.accounts.protocol_config.burn_rate_bps;
-        let insurance_rate_bps = ctx.accounts.protocol_config.insurance_rate_bps;
-        let burn_amount = (confiscated as u128 * burn_rate_bps as u128 / 10_000) as u64;
-        // 60% to insurance pool
-        let insurance_amount = (confiscated as u128 * insurance_rate_bps as u128 / 10_000) as u64;
-        // 25% to requester (winner)
-        let winner_amount = confiscated
-            .saturating_sub(burn_amount)
-            .saturating_sub(insurance_amount);
-
-        // Return contract value to requester
-        let refund = contract_value
-            .checked_add(winner_amount)
-            .ok_or(TrustError::MathOverflow)?;
-        let transfer_ctx = CpiContext::new_with_signer(
-            ctx.accounts.token_program.to_account_info(),
-            Transfer {
-                from: ctx.accounts.escrow_vault.to_account_info(),
-                to: ctx.accounts.requester_token_account.to_account_info(),
-                authority: ctx.accounts.escrow_vault.to_account_info(),
-            },
-            signer_seeds,
-        );
-        token::transfer(transfer_ctx, refund)?;
-
-        // Transfer insurance portion to pool
-        if insurance_amount > 0 {
             let transfer_ctx = CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
                 Transfer {
                     from: ctx.accounts.escrow_vault.to_account_info(),
-                    to: ctx.accounts.insurance_vault.to_account_info(),
+                    to: ctx.accounts.provider_token_account.to_account_info(),
                     authority: ctx.accounts.escrow_vault.to_account_info(),
                 },
                 signer_seeds,
             );
-            token::transfer(transfer_ctx, insurance_amount)?;
+            token::transfer(transfer_ctx, total)?;
 
-            ctx.accounts.insurance_pool.total_balance = ctx
-                .accounts
-                .insurance_pool
-                .total_balance
-                .saturating_add(insurance_amount);
+            ctx.accounts.requester_identity.disputes_lost = ctx.accounts.requester_identity.disputes_lost.saturating_add(1);
+            ctx.accounts.provider_identity.disputes_won = ctx.accounts.provider_identity.disputes_won.saturating_add(1);
+            msg!("Dispute resolved (SWORN): PROVIDER wins. {} released.", total);
+        } else {
+            ctx.accounts.dispute.status = DisputeStatus::ResolvedRequester;
+            ctx.accounts.contract.status = ContractStatus::ResolvedRequester;
+
+            let confiscated = ctx.accounts.contract.provider_stake;
+            let contract_value = ctx.accounts.contract.value;
+            let burn_rate_bps = ctx.accounts.protocol_config.burn_rate_bps;
+            let insurance_rate_bps = ctx.accounts.protocol_config.insurance_rate_bps;
+            let burn_amount = (confiscated as u128 * burn_rate_bps as u128 / 10_000) as u64;
+            let insurance_amount = (confiscated as u128 * insurance_rate_bps as u128 / 10_000) as u64;
+            let winner_amount = confiscated.saturating_sub(burn_amount).saturating_sub(insurance_amount);
+
+            let refund = contract_value.checked_add(winner_amount).ok_or(TrustError::MathOverflow)?;
+            token::transfer(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    Transfer {
+                        from: ctx.accounts.escrow_vault.to_account_info(),
+                        to: ctx.accounts.requester_token_account.to_account_info(),
+                        authority: ctx.accounts.escrow_vault.to_account_info(),
+                    },
+                    signer_seeds,
+                ),
+                refund,
+            )?;
+
+            if insurance_amount > 0 {
+                token::transfer(
+                    CpiContext::new_with_signer(
+                        ctx.accounts.token_program.to_account_info(),
+                        Transfer {
+                            from: ctx.accounts.escrow_vault.to_account_info(),
+                            to: ctx.accounts.insurance_vault.to_account_info(),
+                            authority: ctx.accounts.escrow_vault.to_account_info(),
+                        },
+                        signer_seeds,
+                    ),
+                    insurance_amount,
+                )?;
+                ctx.accounts.insurance_pool.total_balance = ctx.accounts.insurance_pool.total_balance.saturating_add(insurance_amount);
+            }
+
+            if burn_amount > 0 {
+                // Validate sworn_mint for burn
+                require!(
+                    ctx.accounts.sworn_mint.key() == ctx.accounts.protocol_config.sworn_mint,
+                    TrustError::InvalidDestination
+                );
+                let burn_ctx = CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    Burn {
+                        mint: ctx.accounts.sworn_mint.to_account_info(),
+                        from: ctx.accounts.escrow_vault.to_account_info(),
+                        authority: ctx.accounts.escrow_vault.to_account_info(),
+                    },
+                    signer_seeds,
+                );
+                token::burn(burn_ctx, burn_amount)?;
+            }
+
+            ctx.accounts.provider_identity.disputes_lost = ctx.accounts.provider_identity.disputes_lost.saturating_add(1);
+            ctx.accounts.requester_identity.disputes_won = ctx.accounts.requester_identity.disputes_won.saturating_add(1);
+            msg!("Dispute resolved (SWORN): REQUESTER wins. Confiscated: {}, Burned: {}, Insurance: {}, Winner: {}", confiscated, burn_amount, insurance_amount, winner_amount);
         }
-
-        // Burn tokens (15% deflationary mechanic)
-        if burn_amount > 0 {
-            let burn_ctx = CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                Burn {
-                    mint: ctx.accounts.sworn_mint.to_account_info(),
-                    from: ctx.accounts.escrow_vault.to_account_info(),
-                    authority: ctx.accounts.escrow_vault.to_account_info(),
-                },
-                signer_seeds,
-            );
-            token::burn(burn_ctx, burn_amount)?;
-        }
-
-        // Update provider stats (lost dispute)
-        ctx.accounts.provider_identity.disputes_lost = ctx
-            .accounts
-            .provider_identity
-            .disputes_lost
-            .saturating_add(1);
-
-        // Update requester stats (won dispute)
-        ctx.accounts.requester_identity.disputes_won = ctx
-            .accounts
-            .requester_identity
-            .disputes_won
-            .saturating_add(1);
-
-        msg!(
-            "Dispute resolved: REQUESTER wins. Confiscated: {}. Burned: {}, Insurance: {}, Winner: {}",
-            confiscated, burn_amount, insurance_amount, winner_amount
-        );
     }
 
     Ok(())
@@ -438,21 +465,20 @@ pub struct ResolveDispute<'info> {
     )]
     pub requester_identity: Box<Account<'info, AgentIdentity>>,
 
-    #[account(
-        mut,
-        constraint = provider_token_account.owner == contract.provider,
-    )]
-    pub provider_token_account: Box<Account<'info, TokenAccount>>,
-
-    #[account(
-        mut,
-        constraint = requester_token_account.owner == contract.requester,
-    )]
-    pub requester_token_account: Box<Account<'info, TokenAccount>>,
-
-    /// Escrow vault — seeds validated manually in handler to avoid stack overflow
+    /// For SWORN: provider's ATA. For SOL: provider's wallet.
+    /// CHECK: For SOL, validated key == contract.provider. For SWORN, token CPI validates.
     #[account(mut)]
-    pub escrow_vault: Box<Account<'info, TokenAccount>>,
+    pub provider_token_account: UncheckedAccount<'info>,
+
+    /// For SWORN: requester's ATA. For SOL: requester's wallet.
+    /// CHECK: For SOL, validated key == contract.requester. For SWORN, token CPI validates.
+    #[account(mut)]
+    pub requester_token_account: UncheckedAccount<'info>,
+
+    /// Escrow vault PDA for SWORN. Unused for SOL.
+    /// CHECK: Validated manually in handler via find_program_address.
+    #[account(mut)]
+    pub escrow_vault: UncheckedAccount<'info>,
 
     #[account(
         mut,
@@ -461,15 +487,15 @@ pub struct ResolveDispute<'info> {
     )]
     pub insurance_pool: Box<Account<'info, InsurancePool>>,
 
-    /// Insurance pool token vault
+    /// For SWORN: insurance vault ATA. For SOL: pool authority PDA.
+    /// CHECK: Validated in handler based on currency.
     #[account(mut)]
-    pub insurance_vault: Box<Account<'info, TokenAccount>>,
+    pub insurance_vault: UncheckedAccount<'info>,
 
-    #[account(
-        mut,
-        constraint = sworn_mint.key() == protocol_config.sworn_mint,
-    )]
-    pub sworn_mint: Box<Account<'info, Mint>>,
+    /// SWORN mint. Only used for SWORN burn path.
+    /// CHECK: Validated key == protocol_config.sworn_mint in handler.
+    #[account(mut)]
+    pub sworn_mint: UncheckedAccount<'info>,
 
     #[account(
         seeds = [b"protocol-config"],
@@ -619,6 +645,15 @@ pub fn handler_accept_correction(ctx: Context<AcceptCorrection>) -> Result<()> {
 
     if contract_currency == Currency::Sol {
         // SOL-denominated contract: transfer lamports from contract PDA
+        // Validate destinations
+        require!(
+            ctx.accounts.provider_token_account.key() == contract.provider,
+            TrustError::InvalidDestination
+        );
+        require!(
+            ctx.accounts.treasury_token_account.key() == ctx.accounts.protocol_config.admin,
+            TrustError::InvalidDestination
+        );
         let contract_info = ctx.accounts.contract.to_account_info();
         let provider_info = ctx.accounts.provider_token_account.to_account_info();
         let treasury_info = ctx.accounts.treasury_token_account.to_account_info();
@@ -772,23 +807,25 @@ pub struct AcceptCorrection<'info> {
     )]
     pub provider_identity: Box<Account<'info, AgentIdentity>>,
 
-    #[account(
-        mut,
-        constraint = provider_token_account.owner == contract.provider,
-    )]
-    pub provider_token_account: Box<Account<'info, TokenAccount>>,
-
-    #[account(
-        mut,
-        constraint = treasury_token_account.owner == protocol_config.admin,
-    )]
-    pub treasury_token_account: Box<Account<'info, TokenAccount>>,
-
+    /// For SWORN: provider's ATA. For SOL: provider's wallet.
+    /// CHECK: For SOL, validated key == contract.provider. For SWORN, token CPI validates.
     #[account(mut)]
-    pub insurance_vault: Box<Account<'info, TokenAccount>>,
+    pub provider_token_account: UncheckedAccount<'info>,
 
+    /// For SWORN: admin's ATA. For SOL: admin's wallet.
+    /// CHECK: For SOL, validated key == config.admin. For SWORN, token CPI validates.
     #[account(mut)]
-    pub escrow_vault: Box<Account<'info, TokenAccount>>,
+    pub treasury_token_account: UncheckedAccount<'info>,
+
+    /// For SWORN: insurance vault ATA. For SOL: pool authority PDA.
+    /// CHECK: Validated in handler based on currency.
+    #[account(mut)]
+    pub insurance_vault: UncheckedAccount<'info>,
+
+    /// Escrow vault PDA for SWORN contracts. Unused for SOL.
+    /// CHECK: Validated manually in handler for SWORN path.
+    #[account(mut)]
+    pub escrow_vault: UncheckedAccount<'info>,
 
     #[account(
         seeds = [b"protocol-config"],
