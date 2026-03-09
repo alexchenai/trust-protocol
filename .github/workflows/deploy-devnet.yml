@@ -3,115 +3,68 @@ name: Deploy to Devnet
 on:
   workflow_dispatch:
     inputs:
-      initialize:
-        description: 'Initialize the protocol after deployment'
-        required: false
-        default: 'false'
-        type: choice
-        options:
-          - 'true'
-          - 'false'
+      confirm:
+        description: 'Type "deploy" to confirm'
+        required: true
+        default: ''
 
 jobs:
   deploy:
-    name: Build & Deploy to Devnet
+    if: github.event.inputs.confirm == 'deploy'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-
+    timeout-minutes: 30
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y pkg-config build-essential libudev-dev
+      - name: Install Solana CLI
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Install Anchor CLI
+        run: |
+          cargo install --git https://github.com/coral-xyz/anchor --tag v0.30.1 anchor-cli --locked
+        env:
+          CARGO_PROFILE_RELEASE_LTO: thin
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
         with:
-          node-version: '20'
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.88.0
-
-      - name: Install Solana CLI (Agave 3.1.9)
-        run: |
-          cd $HOME
-          wget -q https://github.com/anza-xyz/agave/releases/download/v3.1.9/solana-release-x86_64-unknown-linux-gnu.tar.bz2
-          tar jxf solana-release-x86_64-unknown-linux-gnu.tar.bz2
-          echo "$HOME/solana-release/bin" >> $GITHUB_PATH
-          export PATH="$HOME/solana-release/bin:$PATH"
-          solana --version
-
-      - name: Install Anchor CLI (pre-built binary)
-        run: |
-          wget -q https://github.com/solana-foundation/anchor/releases/download/v0.31.1/anchor-0.31.1-x86_64-unknown-linux-gnu -O anchor
-          chmod +x anchor
-          sudo mv anchor /usr/local/bin/anchor
-          anchor --version
-
-      - name: Verify installations
-        run: |
-          solana --version
-          anchor --version
-          rustc --version
-          cargo --version
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-anchor-build-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Setup wallet
         run: |
-          mkdir -p ~/.config/solana
-          echo '${{ secrets.DEVNET_WALLET_KEY }}' > ~/.config/solana/id.json
+          echo '${{ secrets.DEVNET_WALLET_KEY }}' > /tmp/deployer.json
           solana config set --url devnet
-          echo "Wallet balance:"
+          solana config set --keypair /tmp/deployer.json
+          echo "Wallet: $(solana-keygen pubkey /tmp/deployer.json)"
           solana balance
 
-      - name: Remove stale Cargo.lock
-        run: rm -f Cargo.lock
-
-      - name: Build
+      - name: Build program
         run: anchor build
 
-      - name: List deploy artifacts
-        run: ls -la target/deploy/
-
-      - name: Extract and set program ID
-        id: program_id
+      - name: Upgrade program on devnet
         run: |
-          KEYPAIR=$(ls target/deploy/*-keypair.json 2>/dev/null | head -1)
-          if [ -z "$KEYPAIR" ]; then
-            echo "No keypair found in target/deploy/"
-            exit 1
-          fi
-          echo "Using keypair: $KEYPAIR"
-          PROGRAM_ID=$(solana-keygen pubkey "$KEYPAIR")
-          echo "program_id=$PROGRAM_ID" >> $GITHUB_OUTPUT
-          echo "Program ID: $PROGRAM_ID"
-          sed -i "s/declare_id!(\"[^\"]*\")/declare_id!(\"$PROGRAM_ID\")/" programs/trust-protocol/src/lib.rs
-          sed -i "s/^trust_protocol = \".*\"/trust_protocol = \"$PROGRAM_ID\"/" Anchor.toml
+          PROGRAM_ID="CSBAc1SiMALr4rnuCoB17BsddzthB4RAhjibGvyt6p6S"
+          echo "Upgrading program: $PROGRAM_ID"
+          solana program deploy \
+            target/deploy/trust_protocol.so \
+            --program-id $PROGRAM_ID \
+            --upgrade-authority /tmp/deployer.json \
+            --url devnet
+          echo "Program upgraded successfully!"
 
-      - name: Rebuild with correct program ID
-        run: anchor build
-
-      - name: Deploy to devnet
+      - name: Verify deployment
         run: |
-          echo "Deploying to devnet..."
-          solana balance
-          anchor deploy --provider.cluster devnet
+          PROGRAM_ID="CSBAc1SiMALr4rnuCoB17BsddzthB4RAhjibGvyt6p6S"
+          solana program show $PROGRAM_ID --url devnet
+          echo ""
+          echo "Explorer: https://explorer.solana.com/address/$PROGRAM_ID?cluster=devnet"
 
-      - name: Initialize protocol
-        if: ${{ github.event.inputs.initialize == 'true' }}
-        run: |
-          npm ci
-          npx ts-node scripts/initialize-protocol.ts
-        env:
-          ANCHOR_PROVIDER_URL: https://api.devnet.solana.com
-          ANCHOR_WALLET: ~/.config/solana/id.json
-
-      - name: Deployment summary
-        run: |
-          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
-          echo "- **Program ID:** \`${{ steps.program_id.outputs.program_id }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Cluster:** devnet" >> $GITHUB_STEP_SUMMARY
-          echo "- **Wallet:** $(solana-keygen pubkey ~/.config/solana/id.json)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Balance after deploy:** $(solana balance)" >> $GITHUB_STEP_SUMMARY
+      - name: Cleanup
+        if: always()
+        run: rm -f /tmp/deployer.json
