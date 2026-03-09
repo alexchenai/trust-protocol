@@ -349,6 +349,7 @@ func NewAcceptProposalInstruction(
 			solana.Meta(escrowVaultPDA).WRITE(),
 			solana.Meta(configPDA),
 			solana.Meta(TokenProgramID),
+			solana.Meta(SystemProgramID),
 		},
 		DataBytes: disc[:],
 	}
