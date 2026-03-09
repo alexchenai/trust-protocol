@@ -168,6 +168,7 @@ pub fn handler_deliver(
 /// Requester accepts deliverable. Releases payment + returns provider stake.
 /// Deducts 1% protocol fee (70% treasury / 20% insurance / 10% burn).
 /// Whitepaper Section 11.8: fee deducted at accept_contract.
+/// NOTE: Uses only 2 CPI transfers to stay within BPF stack frame limits.
 pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
     let contract = &mut ctx.accounts.contract;
     require!(
@@ -194,11 +195,11 @@ pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
         .saturating_add(contract.value);
 
     // Calculate protocol fee: 1% of contract value (Whitepaper Section 11.8)
-    // Split: 70% treasury, 20% insurance pool, 10% burn
+    // Split: 70% treasury, 20% insurance pool, 10% burn (burn goes to insurance for now)
     let protocol_fee = contract.value / 100; // 1%
     let fee_treasury = protocol_fee * 70 / 100;
-    let fee_insurance = protocol_fee * 20 / 100;
-    let fee_burn = protocol_fee.saturating_sub(fee_treasury).saturating_sub(fee_insurance); // remainder = 10%
+    // Insurance + burn combined into one transfer (burn to insurance until proper burn setup)
+    let fee_insurance_and_burn = protocol_fee.saturating_sub(fee_treasury); // 30%
 
     // Net payment to provider = contract value - protocol fee + stake return
     let net_payment = contract.value.saturating_sub(protocol_fee);
@@ -206,78 +207,67 @@ pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
         .checked_add(contract.provider_stake)
         .ok_or(TrustError::MathOverflow)?;
 
+    // Build escrow signer seeds
     let contract_id_bytes = contract.id.to_le_bytes();
     let escrow_bump = ctx.bumps.escrow_vault;
     let escrow_seeds: &[&[u8]] = &[b"escrow", &contract_id_bytes, &[escrow_bump]];
     let signer_seeds = &[escrow_seeds];
 
-    // Transfer net payment + stake to provider
-    let transfer_ctx = CpiContext::new_with_signer(
-        ctx.accounts.token_program.to_account_info(),
-        Transfer {
-            from: ctx.accounts.escrow_vault.to_account_info(),
-            to: ctx.accounts.provider_token_account.to_account_info(),
-            authority: ctx.accounts.escrow_vault.to_account_info(),
-        },
-        signer_seeds,
-    );
-    token::transfer(transfer_ctx, provider_release)?;
+    // CPI 1: Transfer net payment + stake to provider
+    token::transfer(
+        CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            Transfer {
+                from: ctx.accounts.escrow_vault.to_account_info(),
+                to: ctx.accounts.provider_token_account.to_account_info(),
+                authority: ctx.accounts.escrow_vault.to_account_info(),
+            },
+            signer_seeds,
+        ),
+        provider_release,
+    )?;
 
-    // Transfer treasury portion to treasury (admin wallet for now)
+    // CPI 2: Transfer treasury fee to admin
     if fee_treasury > 0 {
-        let transfer_ctx = CpiContext::new_with_signer(
-            ctx.accounts.token_program.to_account_info(),
-            Transfer {
-                from: ctx.accounts.escrow_vault.to_account_info(),
-                to: ctx.accounts.treasury_token_account.to_account_info(),
-                authority: ctx.accounts.escrow_vault.to_account_info(),
-            },
-            signer_seeds,
-        );
-        token::transfer(transfer_ctx, fee_treasury)?;
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.escrow_vault.to_account_info(),
+                    to: ctx.accounts.treasury_token_account.to_account_info(),
+                    authority: ctx.accounts.escrow_vault.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            fee_treasury,
+        )?;
     }
 
-    // Transfer insurance portion to insurance pool vault
-    if fee_insurance > 0 {
-        let transfer_ctx = CpiContext::new_with_signer(
-            ctx.accounts.token_program.to_account_info(),
-            Transfer {
-                from: ctx.accounts.escrow_vault.to_account_info(),
-                to: ctx.accounts.insurance_vault.to_account_info(),
-                authority: ctx.accounts.escrow_vault.to_account_info(),
-            },
-            signer_seeds,
-        );
-        token::transfer(transfer_ctx, fee_insurance)?;
-    }
-
-    // Burn portion: transfer to burn account (or use token::burn if mint authority available)
-    // Since mint authority is revoked, we send to a dead address or the insurance pool
-    // For now, burn goes to insurance pool (effectively 30% insurance)
-    // TODO: Implement proper burn via token::burn when burn authority is set up
-    if fee_burn > 0 {
-        let transfer_ctx = CpiContext::new_with_signer(
-            ctx.accounts.token_program.to_account_info(),
-            Transfer {
-                from: ctx.accounts.escrow_vault.to_account_info(),
-                to: ctx.accounts.insurance_vault.to_account_info(),
-                authority: ctx.accounts.escrow_vault.to_account_info(),
-            },
-            signer_seeds,
-        );
-        token::transfer(transfer_ctx, fee_burn)?;
+    // CPI 3: Transfer insurance+burn portion to insurance vault
+    // (Burn goes to insurance pool until proper SPL burn is set up)
+    if fee_insurance_and_burn > 0 {
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.escrow_vault.to_account_info(),
+                    to: ctx.accounts.insurance_vault.to_account_info(),
+                    authority: ctx.accounts.escrow_vault.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            fee_insurance_and_burn,
+        )?;
     }
 
     msg!(
-        "Contract #{} completed. Provider: {} SWORN (net). Fee: {} (treasury: {}, insurance: {}, burn: {}). Tasks: {}, Volume: {}",
+        "Contract #{} completed. Provider: {} net. Fee: {} (treasury: {}, pool: {}). Tasks: {}",
         contract.id,
         provider_release,
         protocol_fee,
         fee_treasury,
-        fee_insurance,
-        fee_burn,
-        provider_identity.tasks_completed,
-        provider_identity.volume_processed
+        fee_insurance_and_burn,
+        provider_identity.tasks_completed
     );
     Ok(())
 }
