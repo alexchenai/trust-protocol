@@ -300,12 +300,14 @@ func NewProposeContractInstruction(
 	configPDA solana.PublicKey,
 	value uint64,
 	expirySeconds int64,
+	currency uint8,
 ) solana.Instruction {
 	disc := AnchorDiscriminator("propose_contract")
-	var data [24]byte
+	var data [25]byte
 	copy(data[0:8], disc[:])
 	binary.LittleEndian.PutUint64(data[8:16], value)
 	binary.LittleEndian.PutUint64(data[16:24], uint64(expirySeconds))
+	data[24] = currency
 	return &solana.GenericInstruction{
 		ProgID: programID,
 		AccountValues: solana.AccountMetaSlice{

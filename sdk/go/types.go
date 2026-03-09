@@ -156,6 +156,24 @@ func DecodeProtocolConfig(data []byte) (*ProtocolConfig, error) {
 	return c, nil
 }
 
+// Currency represents the denomination for a contract.
+type Currency uint8
+
+const (
+	CurrencySworn Currency = 0
+	CurrencySol   Currency = 1
+)
+
+// String returns the human-readable currency name.
+func (cur Currency) String() string {
+	switch cur {
+	case CurrencySol:
+		return "SOL"
+	default:
+		return "SWORN"
+	}
+}
+
 // ContractStatus represents the lifecycle state of a contract.
 type ContractStatus uint8
 
@@ -168,11 +186,13 @@ const (
 	ContractStatusCancelled         ContractStatus = 5
 	ContractStatusResolvedProvider  ContractStatus = 6
 	ContractStatusResolvedRequester ContractStatus = 7
+	ContractStatusProposed          ContractStatus = 8
+	ContractStatusCancelledExpired  ContractStatus = 9
 )
 
 // String returns the human-readable name.
 func (s ContractStatus) String() string {
-	names := [...]string{"Created", "Active", "Delivered", "Completed", "Disputed", "Cancelled", "ResolvedProvider", "ResolvedRequester"}
+	names := [...]string{"Created", "Active", "Delivered", "Completed", "Disputed", "Cancelled", "ResolvedProvider", "ResolvedRequester", "Proposed", "Cancelled"}
 	if int(s) < len(names) {
 		return names[s]
 	}
@@ -194,6 +214,7 @@ type Contract struct {
 	PoeArweaveTx   string           `json:"poe_arweave_tx"`
 	DisputeLevel   uint8            `json:"dispute_level"`
 	Bump           uint8            `json:"bump"`
+	Currency       Currency         `json:"currency"`
 }
 
 // DecodeContract parses raw account data (including 8-byte discriminator).
@@ -240,6 +261,11 @@ func DecodeContract(data []byte) (*Contract, error) {
 	}
 	if o < len(data) {
 		c.Bump = data[o]
+		o++
+	}
+	// currency field appended in newer program versions; defaults to 0 (SWORN)
+	if o < len(data) {
+		c.Currency = Currency(data[o])
 	}
 	return c, nil
 }
