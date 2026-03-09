@@ -7,11 +7,21 @@
 package trustprotocol
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 
 	"github.com/gagliardetto/solana-go"
 )
+
+// AccountDiscriminator returns the 8-byte Anchor account discriminator
+// for the given account name: sha256("account:<Name>")[0:8].
+func AccountDiscriminator(accountName string) [8]byte {
+	h := sha256.Sum256([]byte("account:" + accountName))
+	var d [8]byte
+	copy(d[:], h[:8])
+	return d
+}
 
 // ---------------------------------------------------------------------------
 // On-chain account structs (mirror Anchor state.rs exactly)
@@ -232,4 +242,52 @@ func DecodeContract(data []byte) (*Contract, error) {
 		c.Bump = data[o]
 	}
 	return c, nil
+}
+
+// ProofOfExecution represents an on-chain PoE record with input/output hashes.
+type ProofOfExecution struct {
+	Contract    solana.PublicKey `json:"contract"`
+	Provider    solana.PublicKey `json:"provider"`
+	InputHash   [32]byte        `json:"input_hash"`
+	OutputHash  [32]byte        `json:"output_hash"`
+	SubmittedAt int64           `json:"submitted_at"`
+	Validated   bool            `json:"validated"`
+	ArweaveTx   string          `json:"arweave_tx"`
+	Bump        uint8           `json:"bump"`
+}
+
+// ProofOfExecutionMinSize is the minimum account size (empty arweave_tx string).
+const ProofOfExecutionMinSize = 8 + 32 + 32 + 32 + 32 + 8 + 1 + 4 + 1 // 150
+
+// DecodeProofOfExecution parses raw account data (including 8-byte discriminator).
+func DecodeProofOfExecution(data []byte) (*ProofOfExecution, error) {
+	if len(data) < ProofOfExecutionMinSize {
+		return nil, fmt.Errorf("poe data too short: %d < %d", len(data), ProofOfExecutionMinSize)
+	}
+	o := 8 // skip discriminator
+	p := &ProofOfExecution{}
+	p.Contract = solana.PublicKeyFromBytes(data[o : o+32])
+	o += 32
+	p.Provider = solana.PublicKeyFromBytes(data[o : o+32])
+	o += 32
+	copy(p.InputHash[:], data[o:o+32])
+	o += 32
+	copy(p.OutputHash[:], data[o:o+32])
+	o += 32
+	p.SubmittedAt = int64(binary.LittleEndian.Uint64(data[o : o+8]))
+	o += 8
+	p.Validated = data[o] != 0
+	o++
+	if o+4 <= len(data) {
+		strLen := int(binary.LittleEndian.Uint32(data[o : o+4]))
+		o += 4
+		if o+strLen <= len(data) {
+			p.ArweaveTx = string(data[o : o+strLen])
+			o += strLen
+		}
+	}
+	if o < len(data) {
+		p.Bump = data[o]
+	}
+	return p, nil
 }
