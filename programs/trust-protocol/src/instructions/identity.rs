@@ -107,9 +107,10 @@ pub struct RegisterAgent<'info> {
     pub agent_token_account: Account<'info, TokenAccount>,
 
     /// Bond vault (PDA-controlled, tokens locked permanently)
+    /// Uses bond-vault-v2 seeds after v1→v2 migration.
     #[account(
         mut,
-        seeds = [b"bond-vault"],
+        seeds = [b"bond-vault-v2"],
         bump,
     )]
     pub bond_vault: Account<'info, TokenAccount>,
