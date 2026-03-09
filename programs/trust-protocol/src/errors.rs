@@ -46,4 +46,8 @@ pub enum TrustError {
     SoulboundViolation,
     #[msg("Invalid escrow vault PDA")]
     InvalidEscrowVault,
+    #[msg("Contract proposal has expired")]
+    ProposalExpired,
+    #[msg("Proposal has not expired yet (cannot cancel before expiry)")]
+    ProposalNotExpired,
 }

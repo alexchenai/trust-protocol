@@ -47,6 +47,23 @@ pub mod trust_protocol {
         contract::handler_create(ctx, value)
     }
 
+    /// Propose a contract. Only requester signs; deposits escrow.
+    /// Provider must call accept_proposal to activate.
+    pub fn propose_contract(ctx: Context<ProposeContract>, value: u64, expiry_seconds: u64) -> Result<()> {
+        proposal::handler_propose(ctx, value, expiry_seconds)
+    }
+
+    /// Provider accepts a proposed contract by depositing stake.
+    /// Transitions contract from Proposed to Active.
+    pub fn accept_proposal(ctx: Context<AcceptProposal>) -> Result<()> {
+        proposal::handler_accept_proposal(ctx)
+    }
+
+    /// Cancel an expired proposal. Requester reclaims escrowed funds.
+    pub fn cancel_proposal(ctx: Context<CancelProposal>) -> Result<()> {
+        proposal::handler_cancel_proposal(ctx)
+    }
+
     /// Provider submits deliverable with Proof of Execution (PoE).
     /// Whitepaper Section 1: immutable PoE with input/output hashes.
     pub fn deliver_contract(

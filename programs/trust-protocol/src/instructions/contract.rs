@@ -8,7 +8,7 @@ use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 /// Returns basis points (10000 = 100%, 500 = 5%).
 /// Uses integer approximation of the convex curve with a lookup table
 /// to avoid floating-point operations on-chain.
-fn calculate_stake_factor(trust_score: u16, min_bps: u16, _max_bps: u16) -> u16 {
+pub(crate) fn calculate_stake_factor(trust_score: u16, min_bps: u16, _max_bps: u16) -> u16 {
     if trust_score >= 100 {
         return min_bps; // 500 bps = 5%
     }
@@ -28,7 +28,7 @@ fn calculate_stake_factor(trust_score: u16, min_bps: u16, _max_bps: u16) -> u16 
 }
 
 /// Integer square root (Newton's method).
-fn integer_sqrt(n: u64) -> u64 {
+pub(crate) fn integer_sqrt(n: u64) -> u64 {
     if n == 0 {
         return 0;
     }
@@ -109,6 +109,8 @@ pub fn handler_create(ctx: Context<CreateContract>, value: u64) -> Result<()> {
     contract.poe_arweave_tx = String::new();
     contract.dispute_level = 0;
     contract.bump = ctx.bumps.contract;
+    contract.proposal_expires_at = 0;
+    contract.provider_stake_required = 0;
 
     // Increment contract counter
     let config = &mut ctx.accounts.protocol_config;

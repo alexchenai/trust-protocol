@@ -69,6 +69,10 @@ pub struct Contract {
     pub dispute_level: u8,
     /// Bump seed
     pub bump: u8,
+    /// Unix timestamp when proposal expires (0 = no expiry / legacy contract)
+    pub proposal_expires_at: i64,
+    /// Provider stake required (calculated at proposal time, locked for accept)
+    pub provider_stake_required: u64,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace)]
@@ -89,6 +93,8 @@ pub enum ContractStatus {
     ResolvedProvider,
     /// Resolved via dispute (requester won)
     ResolvedRequester,
+    /// Proposed by requester, awaiting provider acceptance
+    Proposed,
 }
 
 /// Proof of Execution record (Whitepaper Section 1: PoE)
