@@ -120,6 +120,12 @@ pub mod trust_protocol {
         dispute::handler_accept_correction(ctx)
     }
 
+    /// Migrate old Dispute accounts to include corrections_count field.
+    /// Reallocs from 169 to 170 bytes. Call once per old dispute.
+    pub fn migrate_dispute_size(ctx: Context<MigrateDisputeSize>) -> Result<()> {
+        dispute::handler_migrate_dispute(ctx)
+    }
+
     // === Insurance Pool (Whitepaper Section 6) ===
 
     /// File retroactive claim within 90-day window. Max 80% of contract value.

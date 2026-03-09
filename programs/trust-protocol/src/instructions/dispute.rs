@@ -798,3 +798,40 @@ pub struct AcceptCorrection<'info> {
 
     pub token_program: Program<'info, Token>,
 }
+
+// ---------------------------------------------------------------------------
+// Migration: resize old Dispute accounts to include corrections_count
+// ---------------------------------------------------------------------------
+
+/// Migrate a Dispute account created before corrections_count was added.
+/// Reallocs from 169 to 170 bytes. The new byte is zero-filled (corrections_count=0).
+/// Only needs to be called once per old dispute.
+pub fn handler_migrate_dispute(ctx: Context<MigrateDisputeSize>) -> Result<()> {
+    msg!(
+        "Dispute migrated for contract {}. New size: {} bytes. corrections_count: {}",
+        ctx.accounts.dispute.contract,
+        8 + Dispute::INIT_SPACE,
+        ctx.accounts.dispute.corrections_count
+    );
+    Ok(())
+}
+
+#[derive(Accounts)]
+pub struct MigrateDisputeSize<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    pub contract: Account<'info, Contract>,
+
+    #[account(
+        mut,
+        realloc = 8 + Dispute::INIT_SPACE,
+        realloc::payer = payer,
+        realloc::zero = true,
+        seeds = [b"dispute" as &[u8], contract.key().as_ref()],
+        bump,
+    )]
+    pub dispute: Account<'info, Dispute>,
+
+    pub system_program: Program<'info, System>,
+}

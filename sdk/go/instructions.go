@@ -571,3 +571,26 @@ func NewAcceptCorrectionInstruction(
 		DataBytes: disc[:],
 	}
 }
+
+
+// NewMigrateDisputeSizeInstruction builds "migrate_dispute_size" (no extra args).
+// Reallocs an old Dispute account from 169 to 170 bytes.
+// Accounts: payer (signer, writable), contract (read), dispute (writable), system_program.
+func NewMigrateDisputeSizeInstruction(
+	programID solana.PublicKey,
+	payer solana.PublicKey,
+	contractPDA solana.PublicKey,
+	disputePDA solana.PublicKey,
+) solana.Instruction {
+	disc := AnchorDiscriminator("migrate_dispute_size")
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(payer).SIGNER().WRITE(),
+			solana.Meta(contractPDA),
+			solana.Meta(disputePDA).WRITE(),
+			solana.Meta(SystemProgramID),
+		},
+		DataBytes: disc[:],
+	}
+}
