@@ -212,9 +212,11 @@ type Contract struct {
 	ResolvedAt     int64            `json:"resolved_at"`
 	PoeHash        [32]byte         `json:"poe_hash"`
 	PoeArweaveTx   string           `json:"poe_arweave_tx"`
-	DisputeLevel   uint8            `json:"dispute_level"`
-	Bump           uint8            `json:"bump"`
-	Currency       Currency         `json:"currency"`
+	DisputeLevel          uint8            `json:"dispute_level"`
+	Bump                  uint8            `json:"bump"`
+	ProposalExpiresAt     int64            `json:"proposal_expires_at"`
+	ProviderStakeRequired uint64           `json:"provider_stake_required"`
+	Currency              Currency         `json:"currency"`
 }
 
 // DecodeContract parses raw account data (including 8-byte discriminator).
@@ -263,7 +265,14 @@ func DecodeContract(data []byte) (*Contract, error) {
 		c.Bump = data[o]
 		o++
 	}
-	// currency field appended in newer program versions; defaults to 0 (SWORN)
+	if o+8 <= len(data) {
+		c.ProposalExpiresAt = int64(binary.LittleEndian.Uint64(data[o : o+8]))
+		o += 8
+	}
+	if o+8 <= len(data) {
+		c.ProviderStakeRequired = binary.LittleEndian.Uint64(data[o : o+8])
+		o += 8
+	}
 	if o < len(data) {
 		c.Currency = Currency(data[o])
 	}
