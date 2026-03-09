@@ -285,3 +285,94 @@ func NewCreateATAInstruction(
 		DataBytes: []byte{},
 	}
 }
+
+// NewProposeContractInstruction builds "propose_contract" with value and expiry args.
+// Only the requester signs. Provider must accept separately via accept_proposal.
+func NewProposeContractInstruction(
+	programID solana.PublicKey,
+	requester solana.PublicKey,
+	provider solana.PublicKey,
+	providerIdentityPDA solana.PublicKey,
+	contractPDA solana.PublicKey,
+	requesterTokenAccount solana.PublicKey,
+	escrowVaultPDA solana.PublicKey,
+	swornMint solana.PublicKey,
+	configPDA solana.PublicKey,
+	value uint64,
+	expirySeconds int64,
+) solana.Instruction {
+	disc := AnchorDiscriminator("propose_contract")
+	var data [24]byte
+	copy(data[0:8], disc[:])
+	binary.LittleEndian.PutUint64(data[8:16], value)
+	binary.LittleEndian.PutUint64(data[16:24], uint64(expirySeconds))
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(requester).SIGNER().WRITE(),
+			solana.Meta(provider),
+			solana.Meta(providerIdentityPDA),
+			solana.Meta(contractPDA).WRITE(),
+			solana.Meta(requesterTokenAccount).WRITE(),
+			solana.Meta(escrowVaultPDA).WRITE(),
+			solana.Meta(swornMint),
+			solana.Meta(configPDA).WRITE(),
+			solana.Meta(TokenProgramID),
+			solana.Meta(SystemProgramID),
+			solana.Meta(RentSysvarID),
+		},
+		DataBytes: data[:],
+	}
+}
+
+// NewAcceptProposalInstruction builds "accept_proposal" (no extra args).
+// Provider signs to accept a proposed contract by depositing stake.
+func NewAcceptProposalInstruction(
+	programID solana.PublicKey,
+	provider solana.PublicKey,
+	providerIdentityPDA solana.PublicKey,
+	contractPDA solana.PublicKey,
+	providerTokenAccount solana.PublicKey,
+	escrowVaultPDA solana.PublicKey,
+	swornMint solana.PublicKey,
+	configPDA solana.PublicKey,
+) solana.Instruction {
+	disc := AnchorDiscriminator("accept_proposal")
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(provider).SIGNER().WRITE(),
+			solana.Meta(contractPDA).WRITE(),
+			solana.Meta(providerTokenAccount).WRITE(),
+			solana.Meta(escrowVaultPDA).WRITE(),
+			solana.Meta(configPDA),
+			solana.Meta(TokenProgramID),
+		},
+		DataBytes: disc[:],
+	}
+}
+
+// NewCancelProposalInstruction builds "cancel_proposal" (no extra args).
+// Requester signs to cancel an expired proposal and reclaim escrowed funds.
+func NewCancelProposalInstruction(
+	programID solana.PublicKey,
+	requester solana.PublicKey,
+	contractPDA solana.PublicKey,
+	requesterTokenAccount solana.PublicKey,
+	escrowVaultPDA solana.PublicKey,
+	swornMint solana.PublicKey,
+	configPDA solana.PublicKey,
+) solana.Instruction {
+	disc := AnchorDiscriminator("cancel_proposal")
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(requester).SIGNER(),
+			solana.Meta(contractPDA).WRITE(),
+			solana.Meta(requesterTokenAccount).WRITE(),
+			solana.Meta(escrowVaultPDA).WRITE(),
+			solana.Meta(TokenProgramID),
+		},
+		DataBytes: disc[:],
+	}
+}
