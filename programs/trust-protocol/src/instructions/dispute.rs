@@ -827,15 +827,22 @@ pub fn handler_migrate_dispute(ctx: Context<MigrateDisputeSize>) -> Result<()> {
     let new_len = 8 + Dispute::INIT_SPACE;
 
     if old_len < new_len {
-        // Realloc to new size
+        // Transfer rent difference via CPI to system program
         let rent = Rent::get()?;
         let new_min_balance = rent.minimum_balance(new_len);
         let old_balance = dispute_info.lamports();
         if old_balance < new_min_balance {
             let diff = new_min_balance - old_balance;
-            let payer = &ctx.accounts.payer;
-            **payer.try_borrow_mut_lamports()? -= diff;
-            **dispute_info.try_borrow_mut_lamports()? += diff;
+            anchor_lang::system_program::transfer(
+                CpiContext::new(
+                    ctx.accounts.system_program.to_account_info(),
+                    anchor_lang::system_program::Transfer {
+                        from: ctx.accounts.payer.to_account_info(),
+                        to: dispute_info.to_account_info(),
+                    },
+                ),
+                diff,
+            )?;
         }
         dispute_info.realloc(new_len, false)?;
         // Zero out the new byte (corrections_count = 0)
