@@ -1,7 +1,7 @@
 use crate::errors::TrustError;
 use crate::state::*;
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Token, TokenAccount, Transfer};
+use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
 /// Calculate stake factor based on TrustScore using CONVEX curve.
 /// Whitepaper: factor_stake(ts) = max(0.05, 1.0 - 0.95 * (ts/100)^1.5)
@@ -319,13 +319,22 @@ pub struct CreateContract<'info> {
     )]
     pub provider_token_account: Account<'info, TokenAccount>,
 
-    /// Escrow vault PDA for this contract
+    /// Escrow vault PDA for this contract (initialized at contract creation)
     #[account(
-        mut,
+        init,
+        payer = requester,
+        token::mint = sworn_mint,
+        token::authority = escrow_vault,
         seeds = [b"escrow" as &[u8], &protocol_config.total_contracts.to_le_bytes()],
         bump,
     )]
     pub escrow_vault: Account<'info, TokenAccount>,
+
+    /// SWORN token mint (validated against protocol config)
+    #[account(
+        constraint = sworn_mint.key() == protocol_config.sworn_mint,
+    )]
+    pub sworn_mint: Account<'info, Mint>,
 
     #[account(
         mut,
