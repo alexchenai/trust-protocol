@@ -84,3 +84,28 @@ pub struct UpdateSwornMint<'info> {
     /// The new SWORN mint to set
     pub new_sworn_mint: Account<'info, Mint>,
 }
+
+/// Admin: Force-mature an agent (devnet testing only).
+/// In production, maturation happens after 30 days automatically.
+pub fn handler_force_mature(ctx: Context<ForceMatureAgent>) -> Result<()> {
+    let agent = &mut ctx.accounts.agent_identity;
+    agent.matured = true;
+    msg!("Agent {} force-matured by admin", agent.authority);
+    Ok(())
+}
+
+#[derive(Accounts)]
+pub struct ForceMatureAgent<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+
+    #[account(
+        seeds = [b"protocol-config"],
+        bump = protocol_config.bump,
+        constraint = protocol_config.admin == admin.key(),
+    )]
+    pub protocol_config: Account<'info, ProtocolConfig>,
+
+    #[account(mut)]
+    pub agent_identity: Account<'info, AgentIdentity>,
+}

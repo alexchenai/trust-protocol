@@ -124,4 +124,10 @@ pub mod trust_protocol {
     pub fn update_sworn_mint(ctx: Context<UpdateSwornMint>) -> Result<()> {
         admin::handler_update_sworn_mint(ctx)
     }
+
+    /// Force-mature an agent (devnet testing only).
+    /// Bypasses 30-day maturation period for testing contract lifecycle.
+    pub fn force_mature(ctx: Context<ForceMatureAgent>) -> Result<()> {
+        admin::handler_force_mature(ctx)
+    }
 }
