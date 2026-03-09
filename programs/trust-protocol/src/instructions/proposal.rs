@@ -192,15 +192,9 @@ pub fn handler_cancel_proposal(ctx: Context<CancelProposal>) -> Result<()> {
         TrustError::UnauthorizedRequester
     );
 
-    // If there's an expiry, requester can only cancel after expiry.
-    // If no expiry (0), requester can cancel anytime.
-    if contract_expires > 0 {
-        let now = Clock::get()?.unix_timestamp;
-        require!(
-            now > contract_expires,
-            TrustError::ProposalNotExpired
-        );
-    }
+    // Requester can cancel a proposal at any time before it is accepted.
+    // The expiry is only a soft deadline for the provider to accept.
+    // No penalty for early cancellation — escrow is fully returned.
 
     if is_sol {
         // SOL escrow: return lamports from contract PDA to requester
