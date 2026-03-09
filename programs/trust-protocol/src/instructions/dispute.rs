@@ -807,12 +807,45 @@ pub struct AcceptCorrection<'info> {
 /// Reallocs from 169 to 170 bytes. The new byte is zero-filled (corrections_count=0).
 /// Only needs to be called once per old dispute.
 pub fn handler_migrate_dispute(ctx: Context<MigrateDisputeSize>) -> Result<()> {
-    msg!(
-        "Dispute migrated for contract {}. New size: {} bytes. corrections_count: {}",
-        ctx.accounts.dispute.contract,
-        8 + Dispute::INIT_SPACE,
-        ctx.accounts.dispute.corrections_count
+    let dispute_info = &ctx.accounts.dispute;
+    let contract_key = ctx.accounts.contract.key();
+
+    // Validate PDA
+    let (expected_pda, _bump) = Pubkey::find_program_address(
+        &[b"dispute", contract_key.as_ref()],
+        ctx.program_id,
     );
+    require!(dispute_info.key() == expected_pda, TrustError::InvalidEscrowVault);
+
+    // Check owner
+    require!(
+        dispute_info.owner == ctx.program_id,
+        ProgramError::IllegalOwner
+    );
+
+    let old_len = dispute_info.data_len();
+    let new_len = 8 + Dispute::INIT_SPACE;
+
+    if old_len < new_len {
+        // Realloc to new size
+        let rent = Rent::get()?;
+        let new_min_balance = rent.minimum_balance(new_len);
+        let old_balance = dispute_info.lamports();
+        if old_balance < new_min_balance {
+            let diff = new_min_balance - old_balance;
+            let payer = &ctx.accounts.payer;
+            **payer.try_borrow_mut_lamports()? -= diff;
+            **dispute_info.try_borrow_mut_lamports()? += diff;
+        }
+        dispute_info.realloc(new_len, false)?;
+        // Zero out the new byte (corrections_count = 0)
+        let mut data = dispute_info.try_borrow_mut_data()?;
+        data[old_len..new_len].fill(0);
+        msg!("Dispute migrated for contract {}. {} -> {} bytes.", contract_key, old_len, new_len);
+    } else {
+        msg!("Dispute already at correct size ({} bytes). No migration needed.", old_len);
+    }
+
     Ok(())
 }
 
@@ -823,15 +856,10 @@ pub struct MigrateDisputeSize<'info> {
 
     pub contract: Account<'info, Contract>,
 
-    #[account(
-        mut,
-        realloc = 8 + Dispute::INIT_SPACE,
-        realloc::payer = payer,
-        realloc::zero = true,
-        seeds = [b"dispute" as &[u8], contract.key().as_ref()],
-        bump,
-    )]
-    pub dispute: Account<'info, Dispute>,
+    /// CHECK: Validated manually via PDA derivation + owner check. Cannot use Account<Dispute>
+    /// because old accounts have smaller size and fail deserialization.
+    #[account(mut)]
+    pub dispute: UncheckedAccount<'info>,
 
     pub system_program: Program<'info, System>,
 }
