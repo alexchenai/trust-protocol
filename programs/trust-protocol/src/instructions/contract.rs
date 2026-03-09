@@ -380,21 +380,21 @@ pub struct AcceptContract<'info> {
         constraint = contract.requester == requester.key() @ TrustError::UnauthorizedRequester,
         constraint = contract.status == ContractStatus::Delivered @ TrustError::InvalidContractStatus,
     )]
-    pub contract: Account<'info, Contract>,
+    pub contract: Box<Account<'info, Contract>>,
 
     #[account(
         mut,
         seeds = [b"poe" as &[u8], contract.key().as_ref()],
         bump = proof_of_execution.bump,
     )]
-    pub proof_of_execution: Account<'info, ProofOfExecution>,
+    pub proof_of_execution: Box<Account<'info, ProofOfExecution>>,
 
     #[account(
         mut,
         seeds = [b"agent-identity" as &[u8], contract.provider.as_ref()],
         bump = provider_identity.bump,
     )]
-    pub provider_identity: Account<'info, AgentIdentity>,
+    pub provider_identity: Box<Account<'info, AgentIdentity>>,
 
     /// Provider's SWORN token account (receives payment + stake return)
     #[account(
@@ -402,7 +402,7 @@ pub struct AcceptContract<'info> {
         constraint = provider_token_account.owner == contract.provider,
         constraint = provider_token_account.mint == protocol_config.sworn_mint,
     )]
-    pub provider_token_account: Account<'info, TokenAccount>,
+    pub provider_token_account: Box<Account<'info, TokenAccount>>,
 
     /// Treasury token account (receives 70% of protocol fee)
     #[account(
@@ -410,14 +410,14 @@ pub struct AcceptContract<'info> {
         constraint = treasury_token_account.owner == protocol_config.admin,
         constraint = treasury_token_account.mint == protocol_config.sworn_mint,
     )]
-    pub treasury_token_account: Account<'info, TokenAccount>,
+    pub treasury_token_account: Box<Account<'info, TokenAccount>>,
 
     /// Insurance pool vault (receives 20% of protocol fee + 10% burn)
     #[account(
         mut,
         constraint = insurance_vault.mint == protocol_config.sworn_mint,
     )]
-    pub insurance_vault: Account<'info, TokenAccount>,
+    pub insurance_vault: Box<Account<'info, TokenAccount>>,
 
     /// Escrow vault for this contract
     #[account(
@@ -425,13 +425,13 @@ pub struct AcceptContract<'info> {
         seeds = [b"escrow" as &[u8], &contract.id.to_le_bytes()],
         bump,
     )]
-    pub escrow_vault: Account<'info, TokenAccount>,
+    pub escrow_vault: Box<Account<'info, TokenAccount>>,
 
     #[account(
         seeds = [b"protocol-config"],
         bump = protocol_config.bump,
     )]
-    pub protocol_config: Account<'info, ProtocolConfig>,
+    pub protocol_config: Box<Account<'info, ProtocolConfig>>,
 
     pub token_program: Program<'info, Token>,
 }
