@@ -30,6 +30,14 @@ func FindBondVaultPDA(programID solana.PublicKey) (solana.PublicKey, uint8) {
 	return addr, bump
 }
 
+// FindBondVaultV2PDA derives the bond-vault-v2 token account PDA (after migration).
+func FindBondVaultV2PDA(programID solana.PublicKey) (solana.PublicKey, uint8) {
+	addr, bump, _ := solana.FindProgramAddress(
+		[][]byte{[]byte("bond-vault-v2")}, programID,
+	)
+	return addr, bump
+}
+
 // FindPoolAuthorityPDA derives the pool-authority PDA (signer for vault ops).
 func FindPoolAuthorityPDA(programID solana.PublicKey) (solana.PublicKey, uint8) {
 	addr, bump, _ := solana.FindProgramAddress(
