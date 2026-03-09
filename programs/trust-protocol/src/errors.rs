@@ -50,4 +50,10 @@ pub enum TrustError {
     ProposalExpired,
     #[msg("Proposal has not expired yet (cannot cancel before expiry)")]
     ProposalNotExpired,
+    #[msg("Invalid currency value (must be 0=SWORN or 1=SOL)")]
+    InvalidCurrency,
+    #[msg("Currency mismatch: operation requires SOL-denominated contract")]
+    CurrencyMismatchSol,
+    #[msg("Currency mismatch: operation requires SWORN-denominated contract")]
+    CurrencyMismatchSworn,
 }

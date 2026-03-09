@@ -49,8 +49,9 @@ pub mod trust_protocol {
 
     /// Propose a contract. Only requester signs; deposits escrow.
     /// Provider must call accept_proposal to activate.
-    pub fn propose_contract(ctx: Context<ProposeContract>, value: u64, expiry_seconds: u64) -> Result<()> {
-        proposal::handler_propose(ctx, value, expiry_seconds)
+    /// currency: 0=SWORN (SPL token), 1=SOL (native lamports). Whitepaper Section 11.8b.
+    pub fn propose_contract(ctx: Context<ProposeContract>, value: u64, expiry_seconds: u64, currency: u8) -> Result<()> {
+        proposal::handler_propose(ctx, value, expiry_seconds, currency)
     }
 
     /// Provider accepts a proposed contract by depositing stake.

@@ -111,6 +111,7 @@ pub fn handler_create(ctx: Context<CreateContract>, value: u64) -> Result<()> {
     contract.bump = ctx.bumps.contract;
     contract.proposal_expires_at = 0;
     contract.provider_stake_required = 0;
+    contract.currency = Currency::Sworn; // Default: dual-sign flow uses SWORN
 
     // Increment contract counter
     let config = &mut ctx.accounts.protocol_config;
@@ -196,82 +197,116 @@ pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
         .volume_processed
         .saturating_add(contract.value);
 
+    // Extract values before releasing mutable borrow for SOL lamport transfers
+    let contract_value = contract.value;
+    let contract_provider_stake = contract.provider_stake;
+    let contract_currency = contract.currency;
+    let contract_id_val = contract.id;
+
     // Calculate protocol fee: 1% of contract value (Whitepaper Section 11.8)
     // Split: 70% treasury, 20% insurance pool, 10% burn (burn goes to insurance for now)
-    let protocol_fee = contract.value / 100; // 1%
+    let protocol_fee = contract_value / 100; // 1%
     let fee_treasury = protocol_fee * 70 / 100;
     // Insurance + burn combined into one transfer (burn to insurance until proper burn setup)
     let fee_insurance_and_burn = protocol_fee.saturating_sub(fee_treasury); // 30%
 
     // Net payment to provider = contract value - protocol fee + stake return
-    let net_payment = contract.value.saturating_sub(protocol_fee);
+    let net_payment = contract_value.saturating_sub(protocol_fee);
     let provider_release = net_payment
-        .checked_add(contract.provider_stake)
+        .checked_add(contract_provider_stake)
         .ok_or(TrustError::MathOverflow)?;
 
-    // Manually derive escrow PDA bump (removed seeds from account validation to avoid stack overflow)
-    let contract_id_bytes = contract.id.to_le_bytes();
-    let (expected_escrow, escrow_bump) = Pubkey::find_program_address(
-        &[b"escrow", &contract_id_bytes],
-        ctx.program_id,
-    );
-    require!(
-        ctx.accounts.escrow_vault.key() == expected_escrow,
-        TrustError::InvalidEscrowVault
-    );
-    let escrow_seeds: &[&[u8]] = &[b"escrow", &contract_id_bytes, &[escrow_bump]];
-    let signer_seeds = &[escrow_seeds];
+    if contract_currency == Currency::Sol {
+        // SOL-denominated contract: transfer lamports from contract PDA
+        // For SOL contracts, the client passes system accounts (not token accounts)
+        // for provider_token_account, treasury_token_account, and insurance_vault.
+        let contract_info = ctx.accounts.contract.to_account_info();
+        let provider_info = ctx.accounts.provider_token_account.to_account_info();
+        let treasury_info = ctx.accounts.treasury_token_account.to_account_info();
+        let insurance_info = ctx.accounts.insurance_vault.to_account_info();
 
-    // CPI 1: Transfer net payment + stake to provider
-    token::transfer(
-        CpiContext::new_with_signer(
-            ctx.accounts.token_program.to_account_info(),
-            Transfer {
-                from: ctx.accounts.escrow_vault.to_account_info(),
-                to: ctx.accounts.provider_token_account.to_account_info(),
-                authority: ctx.accounts.escrow_vault.to_account_info(),
-            },
-            signer_seeds,
-        ),
-        provider_release,
-    )?;
+        // Transfer net payment + stake to provider
+        **contract_info.try_borrow_mut_lamports()? -= provider_release;
+        **provider_info.try_borrow_mut_lamports()? += provider_release;
 
-    // CPI 2: Transfer treasury fee to admin
-    if fee_treasury > 0 {
+        // Transfer treasury fee
+        if fee_treasury > 0 {
+            **contract_info.try_borrow_mut_lamports()? -= fee_treasury;
+            **treasury_info.try_borrow_mut_lamports()? += fee_treasury;
+        }
+
+        // Transfer insurance+burn portion
+        if fee_insurance_and_burn > 0 {
+            **contract_info.try_borrow_mut_lamports()? -= fee_insurance_and_burn;
+            **insurance_info.try_borrow_mut_lamports()? += fee_insurance_and_burn;
+        }
+    } else {
+        // SWORN-denominated contract: SPL token transfers via escrow PDA
+        // Manually derive escrow PDA bump (removed seeds from account validation to avoid stack overflow)
+        let contract_id_bytes = contract_id_val.to_le_bytes();
+        let (expected_escrow, escrow_bump) = Pubkey::find_program_address(
+            &[b"escrow", &contract_id_bytes],
+            ctx.program_id,
+        );
+        require!(
+            ctx.accounts.escrow_vault.key() == expected_escrow,
+            TrustError::InvalidEscrowVault
+        );
+        let escrow_seeds: &[&[u8]] = &[b"escrow", &contract_id_bytes, &[escrow_bump]];
+        let signer_seeds = &[escrow_seeds];
+
+        // CPI 1: Transfer net payment + stake to provider
         token::transfer(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
                 Transfer {
                     from: ctx.accounts.escrow_vault.to_account_info(),
-                    to: ctx.accounts.treasury_token_account.to_account_info(),
+                    to: ctx.accounts.provider_token_account.to_account_info(),
                     authority: ctx.accounts.escrow_vault.to_account_info(),
                 },
                 signer_seeds,
             ),
-            fee_treasury,
+            provider_release,
         )?;
-    }
 
-    // CPI 3: Transfer insurance+burn portion to insurance vault
-    // (Burn goes to insurance pool until proper SPL burn is set up)
-    if fee_insurance_and_burn > 0 {
-        token::transfer(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                Transfer {
-                    from: ctx.accounts.escrow_vault.to_account_info(),
-                    to: ctx.accounts.insurance_vault.to_account_info(),
-                    authority: ctx.accounts.escrow_vault.to_account_info(),
-                },
-                signer_seeds,
-            ),
-            fee_insurance_and_burn,
-        )?;
+        // CPI 2: Transfer treasury fee to admin
+        if fee_treasury > 0 {
+            token::transfer(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    Transfer {
+                        from: ctx.accounts.escrow_vault.to_account_info(),
+                        to: ctx.accounts.treasury_token_account.to_account_info(),
+                        authority: ctx.accounts.escrow_vault.to_account_info(),
+                    },
+                    signer_seeds,
+                ),
+                fee_treasury,
+            )?;
+        }
+
+        // CPI 3: Transfer insurance+burn portion to insurance vault
+        // (Burn goes to insurance pool until proper SPL burn is set up)
+        if fee_insurance_and_burn > 0 {
+            token::transfer(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    Transfer {
+                        from: ctx.accounts.escrow_vault.to_account_info(),
+                        to: ctx.accounts.insurance_vault.to_account_info(),
+                        authority: ctx.accounts.escrow_vault.to_account_info(),
+                    },
+                    signer_seeds,
+                ),
+                fee_insurance_and_burn,
+            )?;
+        }
     }
 
     msg!(
-        "Contract #{} completed. Provider: {} net. Fee: {} (treasury: {}, pool: {}). Tasks: {}",
-        contract.id,
+        "Contract #{} completed. Currency: {:?}. Provider: {} net. Fee: {} (treasury: {}, pool: {}). Tasks: {}",
+        contract_id_val,
+        contract_currency,
         provider_release,
         protocol_fee,
         fee_treasury,

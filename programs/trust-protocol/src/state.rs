@@ -73,6 +73,23 @@ pub struct Contract {
     pub proposal_expires_at: i64,
     /// Provider stake required (calculated at proposal time, locked for accept)
     pub provider_stake_required: u64,
+    /// Currency denomination: SWORN (SPL token) or SOL (native lamports)
+    /// Whitepaper Section 11.8b: contracts can be denominated in SOL or SWORN
+    pub currency: Currency,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq, InitSpace)]
+pub enum Currency {
+    /// SWORN SPL token (default)
+    Sworn = 0,
+    /// Native SOL (lamports)
+    Sol = 1,
+}
+
+impl Default for Currency {
+    fn default() -> Self {
+        Currency::Sworn
+    }
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace)]

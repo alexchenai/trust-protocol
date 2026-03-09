@@ -6,9 +6,16 @@ use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
 /// Propose a contract. Only requester signs; deposits escrow value.
 /// Provider must call accept_proposal to activate the contract.
-pub fn handler_propose(ctx: Context<ProposeContract>, value: u64, expiry_seconds: u64) -> Result<()> {
+pub fn handler_propose(ctx: Context<ProposeContract>, value: u64, expiry_seconds: u64, currency: u8) -> Result<()> {
     let config = &ctx.accounts.protocol_config;
     let provider_identity = &ctx.accounts.provider_identity;
+
+    // Parse currency parameter (0=SWORN, 1=SOL)
+    let currency_enum = match currency {
+        0 => Currency::Sworn,
+        1 => Currency::Sol,
+        _ => return Err(TrustError::InvalidCurrency.into()),
+    };
 
     // Validate provider is a registered, matured, non-banned agent
     require!(!provider_identity.banned, TrustError::AgentBanned);
@@ -27,15 +34,33 @@ pub fn handler_propose(ctx: Context<ProposeContract>, value: u64, expiry_seconds
     let stake_required = stake_required as u64;
 
     // Transfer contract value from requester to escrow
-    let transfer_ctx = CpiContext::new(
-        ctx.accounts.token_program.to_account_info(),
-        Transfer {
-            from: ctx.accounts.requester_token_account.to_account_info(),
-            to: ctx.accounts.escrow_vault.to_account_info(),
-            authority: ctx.accounts.requester.to_account_info(),
-        },
-    );
-    token::transfer(transfer_ctx, value)?;
+    if currency_enum == Currency::Sol {
+        // SOL escrow: transfer lamports from requester to the contract PDA
+        let ix = anchor_lang::solana_program::system_instruction::transfer(
+            &ctx.accounts.requester.key(),
+            &ctx.accounts.contract.to_account_info().key,
+            value,
+        );
+        anchor_lang::solana_program::program::invoke(
+            &ix,
+            &[
+                ctx.accounts.requester.to_account_info(),
+                ctx.accounts.contract.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+        )?;
+    } else {
+        // SWORN escrow: SPL token transfer to escrow token account
+        let transfer_ctx = CpiContext::new(
+            ctx.accounts.token_program.to_account_info(),
+            Transfer {
+                from: ctx.accounts.requester_token_account.to_account_info(),
+                to: ctx.accounts.escrow_vault.to_account_info(),
+                authority: ctx.accounts.requester.to_account_info(),
+            },
+        );
+        token::transfer(transfer_ctx, value)?;
+    }
 
     // Initialize contract in Proposed state
     let contract_id = ctx.accounts.protocol_config.total_contracts;
@@ -60,6 +85,7 @@ pub fn handler_propose(ctx: Context<ProposeContract>, value: u64, expiry_seconds
         0
     };
     contract.provider_stake_required = stake_required;
+    contract.currency = currency_enum;
 
     // Increment contract counter
     let config = &mut ctx.accounts.protocol_config;
@@ -69,8 +95,8 @@ pub fn handler_propose(ctx: Context<ProposeContract>, value: u64, expiry_seconds
         .ok_or(TrustError::MathOverflow)?;
 
     msg!(
-        "Contract #{} proposed. Value: {}, Required stake: {} (factor: {}bps). Requester: {}, Provider: {}",
-        contract_id, value, stake_required, stake_factor,
+        "Contract #{} proposed. Value: {}, Currency: {}, Required stake: {} (factor: {}bps). Requester: {}, Provider: {}",
+        contract_id, value, currency, stake_required, stake_factor,
         contract.requester, contract.provider
     );
     Ok(())
@@ -79,98 +105,138 @@ pub fn handler_propose(ctx: Context<ProposeContract>, value: u64, expiry_seconds
 /// Provider accepts a proposed contract by depositing stake.
 /// Transitions contract from Proposed to Active.
 pub fn handler_accept_proposal(ctx: Context<AcceptProposal>) -> Result<()> {
-    let contract = &mut ctx.accounts.contract;
+    // Extract values we need before doing transfers (to avoid borrow conflicts)
+    let is_sol = ctx.accounts.contract.currency == Currency::Sol;
+    let stake_required = ctx.accounts.contract.provider_stake_required;
+    let contract_status = ctx.accounts.contract.status;
+    let contract_provider = ctx.accounts.contract.provider;
+    let contract_expires = ctx.accounts.contract.proposal_expires_at;
+    let contract_id = ctx.accounts.contract.id;
 
     require!(
-        contract.status == ContractStatus::Proposed,
+        contract_status == ContractStatus::Proposed,
         TrustError::InvalidContractStatus
     );
     require!(
-        contract.provider == ctx.accounts.provider.key(),
+        contract_provider == ctx.accounts.provider.key(),
         TrustError::UnauthorizedProvider
     );
 
     // Check expiry
-    if contract.proposal_expires_at > 0 {
+    if contract_expires > 0 {
         let now = Clock::get()?.unix_timestamp;
         require!(
-            now <= contract.proposal_expires_at,
+            now <= contract_expires,
             TrustError::ProposalExpired
         );
     }
 
     // Transfer provider stake to escrow
-    let stake_required = contract.provider_stake_required;
-    let transfer_ctx = CpiContext::new(
-        ctx.accounts.token_program.to_account_info(),
-        Transfer {
-            from: ctx.accounts.provider_token_account.to_account_info(),
-            to: ctx.accounts.escrow_vault.to_account_info(),
-            authority: ctx.accounts.provider.to_account_info(),
-        },
-    );
-    token::transfer(transfer_ctx, stake_required)?;
+    if is_sol {
+        // SOL stake: transfer lamports from provider to contract PDA
+        let contract_key = ctx.accounts.contract.to_account_info().key();
+        let ix = anchor_lang::solana_program::system_instruction::transfer(
+            &ctx.accounts.provider.key(),
+            &contract_key,
+            stake_required,
+        );
+        anchor_lang::solana_program::program::invoke(
+            &ix,
+            &[
+                ctx.accounts.provider.to_account_info(),
+                ctx.accounts.contract.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+        )?;
+    } else {
+        // SWORN stake: SPL token transfer to escrow vault
+        let transfer_ctx = CpiContext::new(
+            ctx.accounts.token_program.to_account_info(),
+            Transfer {
+                from: ctx.accounts.provider_token_account.to_account_info(),
+                to: ctx.accounts.escrow_vault.to_account_info(),
+                authority: ctx.accounts.provider.to_account_info(),
+            },
+        );
+        token::transfer(transfer_ctx, stake_required)?;
+    }
 
     // Transition to Active
+    let contract = &mut ctx.accounts.contract;
     contract.provider_stake = stake_required;
     contract.status = ContractStatus::Active;
 
     msg!(
-        "Contract #{} accepted by provider {}. Stake deposited: {}",
-        contract.id, contract.provider, stake_required
+        "Contract #{} accepted by provider {}. Stake deposited: {} (currency: {:?})",
+        contract_id, contract_provider, stake_required, if is_sol { Currency::Sol } else { Currency::Sworn }
     );
     Ok(())
 }
 
 /// Cancel an expired proposal. Requester reclaims escrowed funds.
 pub fn handler_cancel_proposal(ctx: Context<CancelProposal>) -> Result<()> {
-    let contract = &mut ctx.accounts.contract;
+    // Extract values before transfers to avoid borrow conflicts
+    let contract_status = ctx.accounts.contract.status;
+    let contract_requester = ctx.accounts.contract.requester;
+    let contract_expires = ctx.accounts.contract.proposal_expires_at;
+    let refund_value = ctx.accounts.contract.value;
+    let is_sol = ctx.accounts.contract.currency == Currency::Sol;
+    let contract_id = ctx.accounts.contract.id;
 
     require!(
-        contract.status == ContractStatus::Proposed,
+        contract_status == ContractStatus::Proposed,
         TrustError::InvalidContractStatus
     );
     require!(
-        contract.requester == ctx.accounts.requester.key(),
+        contract_requester == ctx.accounts.requester.key(),
         TrustError::UnauthorizedRequester
     );
 
     // If there's an expiry, requester can only cancel after expiry.
     // If no expiry (0), requester can cancel anytime.
-    if contract.proposal_expires_at > 0 {
+    if contract_expires > 0 {
         let now = Clock::get()?.unix_timestamp;
         require!(
-            now > contract.proposal_expires_at,
+            now > contract_expires,
             TrustError::ProposalNotExpired
         );
     }
 
-    // Return escrow to requester via PDA signer
-    let contract_id_bytes = contract.id.to_le_bytes();
-    let (_, escrow_bump) = Pubkey::find_program_address(
-        &[b"escrow", &contract_id_bytes],
-        ctx.program_id,
-    );
-    let escrow_seeds: &[&[u8]] = &[b"escrow", &contract_id_bytes, &[escrow_bump]];
-    let signer_seeds = &[escrow_seeds];
+    if is_sol {
+        // SOL escrow: return lamports from contract PDA to requester
+        let contract_info = ctx.accounts.contract.to_account_info();
+        let requester_info = ctx.accounts.requester.to_account_info();
+        **contract_info.try_borrow_mut_lamports()? -= refund_value;
+        **requester_info.try_borrow_mut_lamports()? += refund_value;
+    } else {
+        // SWORN escrow: return SPL tokens via PDA signer
+        let contract_id_bytes = contract_id.to_le_bytes();
+        let (_, escrow_bump) = Pubkey::find_program_address(
+            &[b"escrow", &contract_id_bytes],
+            ctx.program_id,
+        );
+        let escrow_seeds: &[&[u8]] = &[b"escrow", &contract_id_bytes, &[escrow_bump]];
+        let signer_seeds = &[escrow_seeds];
 
-    token::transfer(
-        CpiContext::new_with_signer(
-            ctx.accounts.token_program.to_account_info(),
-            Transfer {
-                from: ctx.accounts.escrow_vault.to_account_info(),
-                to: ctx.accounts.requester_token_account.to_account_info(),
-                authority: ctx.accounts.escrow_vault.to_account_info(),
-            },
-            signer_seeds,
-        ),
-        contract.value,
-    )?;
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.escrow_vault.to_account_info(),
+                    to: ctx.accounts.requester_token_account.to_account_info(),
+                    authority: ctx.accounts.escrow_vault.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            refund_value,
+        )?;
+    }
 
+    let contract = &mut ctx.accounts.contract;
     contract.status = ContractStatus::Cancelled;
     contract.resolved_at = Clock::get()?.unix_timestamp;
 
-    msg!("Contract #{} proposal cancelled. Escrow returned to requester.", contract.id);
+    msg!("Contract #{} proposal cancelled. Escrow returned to requester.", contract_id);
     Ok(())
 }
 
@@ -246,6 +312,7 @@ pub struct AcceptProposal<'info> {
     )]
     pub contract: Account<'info, Contract>,
 
+    /// Provider's SWORN token account (only needed for SWORN-denominated contracts)
     #[account(
         mut,
         constraint = provider_token_account.owner == provider.key(),
@@ -253,7 +320,7 @@ pub struct AcceptProposal<'info> {
     )]
     pub provider_token_account: Account<'info, TokenAccount>,
 
-    /// Escrow vault - already initialized by propose_contract
+    /// Escrow vault - already initialized by propose_contract (SWORN contracts only)
     #[account(
         mut,
         seeds = [b"escrow" as &[u8], &contract.id.to_le_bytes()],
@@ -268,6 +335,7 @@ pub struct AcceptProposal<'info> {
     pub protocol_config: Account<'info, ProtocolConfig>,
 
     pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
