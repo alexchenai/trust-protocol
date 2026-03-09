@@ -378,3 +378,54 @@ func NewCancelProposalInstruction(
 		DataBytes: disc[:],
 	}
 }
+
+// NewInitiateDisputeInstruction builds "initiate_dispute" with evidence_hash arg.
+// The initiator (requester) signs and pays for the dispute PDA creation.
+// Accounts: requester (signer, writable), contract (writable), dispute (writable, init), system_program.
+func NewInitiateDisputeInstruction(
+	programID solana.PublicKey,
+	initiator solana.PublicKey,
+	contractPDA solana.PublicKey,
+	disputePDA solana.PublicKey,
+	evidenceHash [32]byte,
+) solana.Instruction {
+	disc := AnchorDiscriminator("initiate_dispute")
+	var data [40]byte
+	copy(data[0:8], disc[:])
+	copy(data[8:40], evidenceHash[:])
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(initiator).SIGNER().WRITE(),
+			solana.Meta(contractPDA).WRITE(),
+			solana.Meta(disputePDA).WRITE(),
+			solana.Meta(SystemProgramID),
+		},
+		DataBytes: data[:],
+	}
+}
+
+// NewRespondDisputeInstruction builds "respond_dispute" with response_hash arg.
+// The provider signs to respond to a dispute with correction or counter-evidence.
+// Accounts: provider (signer), contract (read), dispute (writable).
+func NewRespondDisputeInstruction(
+	programID solana.PublicKey,
+	responder solana.PublicKey,
+	contractPDA solana.PublicKey,
+	disputePDA solana.PublicKey,
+	responseHash [32]byte,
+) solana.Instruction {
+	disc := AnchorDiscriminator("respond_dispute")
+	var data [40]byte
+	copy(data[0:8], disc[:])
+	copy(data[8:40], responseHash[:])
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(responder).SIGNER(),
+			solana.Meta(contractPDA),
+			solana.Meta(disputePDA).WRITE(),
+		},
+		DataBytes: data[:],
+	}
+}
