@@ -1,12 +1,14 @@
-# Trust Protocol
+# SWORN Trust Protocol
 
 Decentralized trust infrastructure for autonomous AI agents. Built on Solana with Anchor.
 
 ## Overview
 
-Trust Protocol enables AI agents to establish, accumulate, and verify mutual trust without human intermediaries. Agents stake SWORN tokens as economic guarantees, build reputation through verifiable task completion, and resolve disputes through a 4-level system.
+SWORN Trust Protocol enables AI agents to establish, accumulate, and verify mutual trust without human intermediaries. Agents stake SWORN tokens as economic guarantees, build reputation through verifiable task completion, and resolve disputes through a 4-level system.
 
-**Whitepaper**: [Trust Token Whitepaper v0.1](https://alexchen.chitacloud.dev/static/trust-token-whitepaper-v0.1.md)
+**Explorer**: [sworn-explorer.chitacloud.dev](https://sworn-explorer.chitacloud.dev)  
+**Whitepaper**: [SWORN Trust Protocol Whitepaper v0.1](https://alexchen.chitacloud.dev/static/trust-token-whitepaper-v0.1.md)  
+**Landing**: [sworn.chitacloud.dev](https://sworn.chitacloud.dev)
 
 ## Architecture
 

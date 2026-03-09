@@ -1,7 +1,7 @@
 {
   "name": "trust-protocol",
   "version": "0.1.0",
-  "description": "Trust Protocol - Decentralized trust for AI agents",
+  "description": "SWORN Trust Protocol - Decentralized trust infrastructure for autonomous AI agents on Solana",
   "scripts": {
     "build:sdk": "cd sdk && npx tsc",
     "test": "npx ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
