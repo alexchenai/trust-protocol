@@ -147,6 +147,15 @@ pub mod trust_protocol {
         dispute::handler_migrate_dispute(ctx)
     }
 
+    /// Migrate Dispute accounts to include appeal_stake field (u64).
+    /// Reallocs from 170 to 178 bytes. The new 8 bytes are zero-filled (appeal_stake=0).
+    /// appeal_stake is populated by escalate_to_appeal when Level 4 is reached.
+    /// Whitepaper Section 5.4: double-or-nothing stake deposit by escalating party.
+    /// Call once per old dispute. Idempotent for already-migrated accounts.
+    pub fn migrate_dispute_appeal_stake(ctx: Context<MigrateDisputeAppealStake>) -> Result<()> {
+        dispute::handler_migrate_dispute_appeal_stake(ctx)
+    }
+
     // === Insurance Pool (Whitepaper Section 6) ===
 
     /// File retroactive claim within 90-day window. Max 80% of contract value.

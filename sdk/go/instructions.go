@@ -690,6 +690,31 @@ func NewMigrateAgentIdentityInstruction(
 	}
 }
 
+// NewMigrateDisputeAppealStakeInstruction builds "migrate_dispute_appeal_stake" (no extra args).
+// Reallocs an old Dispute account from 170 bytes to 178 bytes by appending 8 zero bytes.
+// The new bytes represent appeal_stake: u64 = 0 (only non-zero at Level 4 after escalation).
+// Whitepaper Section 5.4: double-or-nothing stake for Appeal level disputes.
+// Idempotent: already-migrated accounts (178 bytes) are skipped.
+// Accounts: payer (signer, writable), contract (read), dispute (writable), system_program.
+func NewMigrateDisputeAppealStakeInstruction(
+	programID solana.PublicKey,
+	payer solana.PublicKey,
+	contractPDA solana.PublicKey,
+	disputePDA solana.PublicKey,
+) solana.Instruction {
+	disc := AnchorDiscriminator("migrate_dispute_appeal_stake")
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(payer).SIGNER().WRITE(),
+			solana.Meta(contractPDA),
+			solana.Meta(disputePDA).WRITE(),
+			solana.Meta(SystemProgramID),
+		},
+		DataBytes: disc[:],
+	}
+}
+
 // NewCalculateTrustScoreInstruction builds "calculate_trust_score" with sol_to_sworn_rate arg.
 // Permissionless: any caller can trigger TrustScore recalculation.
 // Implements full whitepaper formula (5 factors + penalties + decay) on-chain.

@@ -354,32 +354,38 @@ func (d DisputeStatus) String() string {
 
 // Dispute represents an on-chain dispute account.
 type Dispute struct {
-	Contract       solana.PublicKey `json:"contract"`
-	Initiator      solana.PublicKey `json:"initiator"`
-	Level          DisputeLevel    `json:"level"`
-	Status         DisputeStatus   `json:"status"`
-	EvidenceHash   [32]byte        `json:"evidence_hash"`
-	ResponseHash   [32]byte        `json:"response_hash"`
-	VotesProvider  uint16          `json:"votes_provider"`
-	VotesRequester uint16          `json:"votes_requester"`
-	JurySize       uint16          `json:"jury_size"`
-	Deadline         int64           `json:"deadline"`
-	CreatedAt        int64           `json:"created_at"`
-	ResolvedAt       int64           `json:"resolved_at"`
-	Bump             uint8           `json:"bump"`
-	CorrectionsCount uint8           `json:"corrections_count"`
+	Contract         solana.PublicKey `json:"contract"`
+	Initiator        solana.PublicKey `json:"initiator"`
+	Level            DisputeLevel     `json:"level"`
+	Status           DisputeStatus    `json:"status"`
+	EvidenceHash     [32]byte         `json:"evidence_hash"`
+	ResponseHash     [32]byte         `json:"response_hash"`
+	VotesProvider    uint16           `json:"votes_provider"`
+	VotesRequester   uint16           `json:"votes_requester"`
+	JurySize         uint16           `json:"jury_size"`
+	Deadline         int64            `json:"deadline"`
+	CreatedAt        int64            `json:"created_at"`
+	ResolvedAt       int64            `json:"resolved_at"`
+	Bump             uint8            `json:"bump"`
+	CorrectionsCount uint8            `json:"corrections_count"`
+	// AppealStake is deposited by the escalating party at Level 4 (Whitepaper Section 5.4).
+	// On loss, forfeited: 60% insurance, 25% winner, 15% burn (double-or-nothing).
+	// Zero for all levels below Appeal. Added in migrate_dispute_appeal_stake migration.
+	AppealStake uint64 `json:"appeal_stake"`
 }
 
 // DisputeSize is the on-chain size including Anchor discriminator.
 // v0.1.6: 8 + 32 + 32 + 1 + 1 + 32 + 32 + 2 + 2 + 2 + 8 + 8 + 8 + 1 = 169
 // v0.1.7: + 1 (corrections_count) = 170
-// Use 169 as minimum for backward compatibility with pre-deploy accounts.
-const DisputeSize = 8 + 32 + 32 + 1 + 1 + 32 + 32 + 2 + 2 + 2 + 8 + 8 + 8 + 1
+// v0.1.12: + 8 (appeal_stake) = 178
+const DisputeSize = 178
 
 // DecodeDispute parses raw account data (including 8-byte discriminator).
+// Backward compatible: corrections_count and appeal_stake are zero if data is shorter.
 func DecodeDispute(data []byte) (*Dispute, error) {
-	if len(data) < DisputeSize {
-		return nil, fmt.Errorf("dispute data too short: %d < %d", len(data), DisputeSize)
+	const minSize = 169 // v0.1.6 minimum
+	if len(data) < minSize {
+		return nil, fmt.Errorf("dispute data too short: %d < %d", len(data), minSize)
 	}
 	o := 8 // skip discriminator
 	d := &Dispute{}
@@ -411,6 +417,10 @@ func DecodeDispute(data []byte) (*Dispute, error) {
 	o++
 	if o < len(data) {
 		d.CorrectionsCount = data[o]
+		o++
+	}
+	if o+8 <= len(data) {
+		d.AppealStake = binary.LittleEndian.Uint64(data[o : o+8])
 	}
 	return d, nil
 }

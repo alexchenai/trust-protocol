@@ -972,3 +972,77 @@ pub struct MigrateDisputeSize<'info> {
 
     pub system_program: Program<'info, System>,
 }
+
+// ---------------------------------------------------------------------------
+// Migration: resize Dispute accounts to include appeal_stake field
+// ---------------------------------------------------------------------------
+
+/// Migrate a Dispute account to include the appeal_stake field (u64).
+/// Reallocs from 170 to 178 bytes. The new 8 bytes are zero-filled (appeal_stake=0).
+/// appeal_stake is only non-zero for Level 4 (Appeal) disputes when the
+/// escalating party deposits the double-or-nothing stake (Whitepaper Section 5.4).
+/// Only needs to be called once per old dispute.
+pub fn handler_migrate_dispute_appeal_stake(ctx: Context<MigrateDisputeAppealStake>) -> Result<()> {
+    let dispute_info = &ctx.accounts.dispute;
+    let contract_key = ctx.accounts.contract.key();
+
+    // Validate PDA
+    let (expected_pda, _bump) = Pubkey::find_program_address(
+        &[b"dispute", contract_key.as_ref()],
+        ctx.program_id,
+    );
+    require!(dispute_info.key() == expected_pda, TrustError::InvalidEscrowVault);
+
+    // Check owner
+    require!(
+        dispute_info.owner == ctx.program_id,
+        TrustError::InvalidEscrowVault
+    );
+
+    let old_len = dispute_info.data_len();
+    let new_len = 8 + Dispute::INIT_SPACE; // 178 bytes
+
+    if old_len < new_len {
+        // Transfer rent difference via CPI to system program
+        let rent = Rent::get()?;
+        let new_min_balance = rent.minimum_balance(new_len);
+        let old_balance = dispute_info.lamports();
+        if old_balance < new_min_balance {
+            let diff = new_min_balance - old_balance;
+            anchor_lang::system_program::transfer(
+                CpiContext::new(
+                    ctx.accounts.system_program.to_account_info(),
+                    anchor_lang::system_program::Transfer {
+                        from: ctx.accounts.payer.to_account_info(),
+                        to: dispute_info.to_account_info(),
+                    },
+                ),
+                diff,
+            )?;
+        }
+        dispute_info.realloc(new_len, false)?;
+        // Zero out the new bytes (appeal_stake = 0)
+        let mut data = dispute_info.try_borrow_mut_data()?;
+        data[old_len..new_len].fill(0);
+        msg!("Dispute migrated for contract {}. {} -> {} bytes.", contract_key, old_len, new_len);
+    } else {
+        msg!("Dispute already at correct size ({} bytes). No migration needed.", old_len);
+    }
+
+    Ok(())
+}
+
+#[derive(Accounts)]
+pub struct MigrateDisputeAppealStake<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    pub contract: Account<'info, Contract>,
+
+    /// CHECK: Validated manually via PDA derivation + owner check. Cannot use Account<Dispute>
+    /// because old accounts have smaller size and fail deserialization.
+    #[account(mut)]
+    pub dispute: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
