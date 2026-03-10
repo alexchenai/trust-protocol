@@ -1001,17 +1001,17 @@ func (p UpdateConfigParams) encode() []byte {
 }
 
 // NewUpdateConfigInstruction builds the update_config instruction.
-// admin: must be the protocol admin signer.
-// configPDA: ProtocolConfig PDA.
+// programID: deployed program address. admin: protocol admin signer. configPDA: ProtocolConfig PDA.
 func NewUpdateConfigInstruction(
+	programID solana.PublicKey,
 	admin solana.PublicKey,
 	configPDA solana.PublicKey,
 	params UpdateConfigParams,
 ) solana.Instruction {
-	disc := anchorDiscriminator("update_config")
+	disc := AnchorDiscriminator("update_config")
 	data := append(disc[:], params.encode()...)
 	return &solana.GenericInstruction{
-		ProgID: TrustProtocolProgramID,
+		ProgID: programID,
 		AccountValues: solana.AccountMetaSlice{
 			solana.Meta(admin).SIGNER().WRITE(),
 			solana.Meta(configPDA).WRITE(),
@@ -1025,8 +1025,9 @@ func NewUpdateConfigInstruction(
 // ---------------------------------------------------------------------------
 
 // NewTimeoutDeliveryInstruction builds the timeout_delivery instruction.
-// All accounts mirror TimeoutDelivery struct in contract.rs.
+// programID: deployed program address. All other accounts mirror TimeoutDelivery struct in contract.rs.
 func NewTimeoutDeliveryInstruction(
+	programID solana.PublicKey,
 	caller solana.PublicKey,
 	contractPDA solana.PublicKey,
 	poePDA solana.PublicKey,
@@ -1038,9 +1039,9 @@ func NewTimeoutDeliveryInstruction(
 	swornMint solana.PublicKey,
 	configPDA solana.PublicKey,
 ) solana.Instruction {
-	disc := anchorDiscriminator("timeout_delivery")
+	disc := AnchorDiscriminator("timeout_delivery")
 	return &solana.GenericInstruction{
-		ProgID: TrustProtocolProgramID,
+		ProgID: programID,
 		AccountValues: solana.AccountMetaSlice{
 			solana.Meta(caller).SIGNER().WRITE(),
 			solana.Meta(contractPDA).WRITE(),
