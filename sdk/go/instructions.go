@@ -959,3 +959,101 @@ func NewDenyInsuranceClaimInstruction(
 		DataBytes: disc[:],
 	}
 }
+
+// ---------------------------------------------------------------------------
+// update_config — GAP-1/GAP-2 fix: admin updates min_bond and maturation_period
+// ---------------------------------------------------------------------------
+
+// UpdateConfigParams mirrors the Rust UpdateConfigParams struct (Borsh).
+// Each field is Option<T>: 0-byte prefix = None, 1-byte prefix + value = Some(v).
+type UpdateConfigParams struct {
+	MinIdentityBond *uint64
+	MaxIdentityBond *uint64
+	MaturationPeriod *int64
+}
+
+func (p UpdateConfigParams) encode() []byte {
+	buf := make([]byte, 0, 64)
+	writeOptionU64 := func(v *uint64) {
+		if v == nil {
+			buf = append(buf, 0)
+		} else {
+			buf = append(buf, 1)
+			b := make([]byte, 8)
+			binary.LittleEndian.PutUint64(b, *v)
+			buf = append(buf, b...)
+		}
+	}
+	writeOptionI64 := func(v *int64) {
+		if v == nil {
+			buf = append(buf, 0)
+		} else {
+			buf = append(buf, 1)
+			b := make([]byte, 8)
+			binary.LittleEndian.PutUint64(b, uint64(*v))
+			buf = append(buf, b...)
+		}
+	}
+	writeOptionU64(p.MinIdentityBond)
+	writeOptionU64(p.MaxIdentityBond)
+	writeOptionI64(p.MaturationPeriod)
+	return buf
+}
+
+// NewUpdateConfigInstruction builds the update_config instruction.
+// admin: must be the protocol admin signer.
+// configPDA: ProtocolConfig PDA.
+func NewUpdateConfigInstruction(
+	admin solana.PublicKey,
+	configPDA solana.PublicKey,
+	params UpdateConfigParams,
+) solana.Instruction {
+	disc := anchorDiscriminator("update_config")
+	data := append(disc[:], params.encode()...)
+	return &solana.GenericInstruction{
+		ProgID: TrustProtocolProgramID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(admin).SIGNER().WRITE(),
+			solana.Meta(configPDA).WRITE(),
+		},
+		DataBytes: data,
+	}
+}
+
+// ---------------------------------------------------------------------------
+// timeout_delivery — GAP-11: requester ghosting protection
+// ---------------------------------------------------------------------------
+
+// NewTimeoutDeliveryInstruction builds the timeout_delivery instruction.
+// All accounts mirror TimeoutDelivery struct in contract.rs.
+func NewTimeoutDeliveryInstruction(
+	caller solana.PublicKey,
+	contractPDA solana.PublicKey,
+	poePDA solana.PublicKey,
+	providerIdentityPDA solana.PublicKey,
+	providerTokenAccount solana.PublicKey,
+	treasuryTokenAccount solana.PublicKey,
+	insuranceVault solana.PublicKey,
+	escrowVault solana.PublicKey,
+	swornMint solana.PublicKey,
+	configPDA solana.PublicKey,
+) solana.Instruction {
+	disc := anchorDiscriminator("timeout_delivery")
+	return &solana.GenericInstruction{
+		ProgID: TrustProtocolProgramID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(caller).SIGNER().WRITE(),
+			solana.Meta(contractPDA).WRITE(),
+			solana.Meta(poePDA).WRITE(),
+			solana.Meta(providerIdentityPDA).WRITE(),
+			solana.Meta(providerTokenAccount).WRITE(),
+			solana.Meta(treasuryTokenAccount).WRITE(),
+			solana.Meta(insuranceVault).WRITE(),
+			solana.Meta(escrowVault).WRITE(),
+			solana.Meta(swornMint).WRITE(),
+			solana.Meta(configPDA),
+			solana.Meta(TokenProgramID),
+		},
+		DataBytes: disc[:],
+	}
+}
