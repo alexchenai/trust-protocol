@@ -511,3 +511,58 @@ func DecodeVoteRecord(data []byte) (*VoteRecord, error) {
 	}
 	return v, nil
 }
+
+// InsuranceClaim represents an on-chain retroactive insurance claim.
+// Whitepaper Section 6: filed within 90 days of contract completion.
+// Size: 8 disc + 32 + 32 + 8 + 8 + 32 + 1 + 8 + 8 + 1 = 138 bytes total.
+type InsuranceClaim struct {
+	Claimant             solana.PublicKey `json:"claimant"`
+	Contract             solana.PublicKey `json:"contract"`
+	Amount               uint64           `json:"amount"`
+	Collateral           uint64           `json:"collateral"`
+	EvidenceHash         [32]byte         `json:"evidence_hash"`
+	Status               uint8            `json:"status"` // 0=Filed,1=UnderReview,2=Approved,3=Denied
+	FiledAt              int64            `json:"filed_at"`
+	ContractCompletedAt  int64            `json:"contract_completed_at"`
+	Bump                 uint8            `json:"bump"`
+}
+
+// InsuranceClaimSize is the on-chain account size including 8-byte discriminator.
+const InsuranceClaimSize = 8 + 32 + 32 + 8 + 8 + 32 + 1 + 8 + 8 + 1 // = 138
+
+// ClaimStatusStrings maps the on-chain ClaimStatus u8 to a readable string.
+var ClaimStatusStrings = map[uint8]string{
+	0: "Filed",
+	1: "UnderReview",
+	2: "Approved",
+	3: "Denied",
+}
+
+// DecodeInsuranceClaim parses raw account data (including 8-byte discriminator).
+func DecodeInsuranceClaim(data []byte) (*InsuranceClaim, error) {
+	if len(data) < InsuranceClaimSize {
+		return nil, fmt.Errorf("insurance_claim data too short: %d < %d", len(data), InsuranceClaimSize)
+	}
+	o := 8 // skip discriminator
+	c := &InsuranceClaim{}
+	c.Claimant = solana.PublicKeyFromBytes(data[o : o+32])
+	o += 32
+	c.Contract = solana.PublicKeyFromBytes(data[o : o+32])
+	o += 32
+	c.Amount = binary.LittleEndian.Uint64(data[o : o+8])
+	o += 8
+	c.Collateral = binary.LittleEndian.Uint64(data[o : o+8])
+	o += 8
+	copy(c.EvidenceHash[:], data[o:o+32])
+	o += 32
+	c.Status = data[o]
+	o++
+	c.FiledAt = int64(binary.LittleEndian.Uint64(data[o : o+8]))
+	o += 8
+	c.ContractCompletedAt = int64(binary.LittleEndian.Uint64(data[o : o+8]))
+	o += 8
+	if o < len(data) {
+		c.Bump = data[o]
+	}
+	return c, nil
+}

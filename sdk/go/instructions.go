@@ -820,3 +820,141 @@ func FindVoteRecordPDA(programID, disputePDA, juror solana.PublicKey) (solana.Pu
 		programID,
 	)
 }
+
+// NewSponsorAgentInstruction builds the "sponsor_agent" instruction.
+// An established agent (TrustScore >= 50, matured) vouches for a newcomer.
+// Whitepaper Section 2.3: Anti-Sybil Layer B - Web-of-Trust, sponsor risks own stake.
+// Args: bonusPoints u16 (2 bytes LE, capped at 5 by on-chain handler).
+// Accounts: sponsor (Signer), sponsorIdentity (AgentIdentity, read),
+//           agentIdentity (AgentIdentity, writable)
+func NewSponsorAgentInstruction(
+	programID solana.PublicKey,
+	sponsor solana.PublicKey,
+	sponsorIdentityPDA solana.PublicKey,
+	agentIdentityPDA solana.PublicKey,
+	bonusPoints uint16,
+) solana.Instruction {
+	disc := AnchorDiscriminator("sponsor_agent")
+	data := make([]byte, 10) // 8 disc + 2 u16
+	copy(data[:8], disc[:])
+	binary.LittleEndian.PutUint16(data[8:10], bonusPoints)
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(sponsor).SIGNER(),
+			solana.Meta(sponsorIdentityPDA),
+			solana.Meta(agentIdentityPDA).WRITE(),
+		},
+		DataBytes: data,
+	}
+}
+
+// NewFileInsuranceClaimInstruction builds the "file_insurance_claim" instruction.
+// A requester who discovers a subtle defect within 90 days can file a retroactive claim.
+// Whitepaper Section 6: Insurance Pool - max payout 80% of contract value.
+// Args: amount u64 (8 bytes LE) + evidenceHash [32]byte = 40 bytes total.
+// Accounts: claimant (Signer+Write), contract (read), insuranceClaim (Write, init PDA),
+//           insurancePool (Write), claimantTokenAccount (Write), insuranceVault (Write),
+//           protocolConfig (read), tokenProgram, systemProgram.
+func NewFileInsuranceClaimInstruction(
+	programID solana.PublicKey,
+	claimant solana.PublicKey,
+	contractPDA solana.PublicKey,
+	insuranceClaimPDA solana.PublicKey,
+	insurancePoolPDA solana.PublicKey,
+	claimantTokenAccount solana.PublicKey,
+	insuranceVault solana.PublicKey,
+	configPDA solana.PublicKey,
+	amount uint64,
+	evidenceHash [32]byte,
+) solana.Instruction {
+	disc := AnchorDiscriminator("file_insurance_claim")
+	data := make([]byte, 8+8+32) // 8 disc + 8 amount + 32 hash
+	copy(data[:8], disc[:])
+	binary.LittleEndian.PutUint64(data[8:16], amount)
+	copy(data[16:48], evidenceHash[:])
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(claimant).SIGNER().WRITE(),
+			solana.Meta(contractPDA),
+			solana.Meta(insuranceClaimPDA).WRITE(),
+			solana.Meta(insurancePoolPDA).WRITE(),
+			solana.Meta(claimantTokenAccount).WRITE(),
+			solana.Meta(insuranceVault).WRITE(),
+			solana.Meta(configPDA),
+			solana.Meta(TokenProgramID),
+			solana.Meta(SystemProgramID),
+		},
+		DataBytes: data,
+	}
+}
+
+// NewSponsorAgentInstruction builds the "sponsor_agent" instruction.
+// An established agent (TrustScore >= 50, matured) vouches for a newcomer.
+// Whitepaper Section 2.3: Anti-Sybil Layer B - Web-of-Trust, sponsor risks own stake.
+// Args: bonusPoints u16 (2 bytes LE, capped at 5 by on-chain handler).
+// Accounts: sponsor (Signer), sponsorIdentity (AgentIdentity, read),
+//           agentIdentity (AgentIdentity, writable)
+func NewSponsorAgentInstruction(
+	programID solana.PublicKey,
+	sponsor solana.PublicKey,
+	sponsorIdentityPDA solana.PublicKey,
+	agentIdentityPDA solana.PublicKey,
+	bonusPoints uint16,
+) solana.Instruction {
+	disc := AnchorDiscriminator("sponsor_agent")
+	data := make([]byte, 10) // 8 disc + 2 u16
+	copy(data[:8], disc[:])
+	binary.LittleEndian.PutUint16(data[8:10], bonusPoints)
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(sponsor).SIGNER(),
+			solana.Meta(sponsorIdentityPDA),
+			solana.Meta(agentIdentityPDA).WRITE(),
+		},
+		DataBytes: data,
+	}
+}
+
+// NewFileInsuranceClaimInstruction builds the "file_insurance_claim" instruction.
+// A requester who discovers a subtle defect within 90 days can file a retroactive claim.
+// Whitepaper Section 6: Insurance Pool - max payout 80% of contract value.
+// Args: amount u64 (8 bytes LE) + evidenceHash [32]byte = 40 bytes total.
+// Accounts: claimant (Signer+Write), contract (read), insuranceClaim (Write, init PDA),
+//           insurancePool (Write), claimantTokenAccount (Write), insuranceVault (Write),
+//           protocolConfig (read), tokenProgram, systemProgram.
+func NewFileInsuranceClaimInstruction(
+	programID solana.PublicKey,
+	claimant solana.PublicKey,
+	contractPDA solana.PublicKey,
+	insuranceClaimPDA solana.PublicKey,
+	insurancePoolPDA solana.PublicKey,
+	claimantTokenAccount solana.PublicKey,
+	insuranceVault solana.PublicKey,
+	configPDA solana.PublicKey,
+	amount uint64,
+	evidenceHash [32]byte,
+) solana.Instruction {
+	disc := AnchorDiscriminator("file_insurance_claim")
+	data := make([]byte, 8+8+32) // 8 disc + 8 amount + 32 hash
+	copy(data[:8], disc[:])
+	binary.LittleEndian.PutUint64(data[8:16], amount)
+	copy(data[16:48], evidenceHash[:])
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(claimant).SIGNER().WRITE(),
+			solana.Meta(contractPDA),
+			solana.Meta(insuranceClaimPDA).WRITE(),
+			solana.Meta(insurancePoolPDA).WRITE(),
+			solana.Meta(claimantTokenAccount).WRITE(),
+			solana.Meta(insuranceVault).WRITE(),
+			solana.Meta(configPDA),
+			solana.Meta(TokenProgramID),
+			solana.Meta(SystemProgramID),
+		},
+		DataBytes: data,
+	}
+}

@@ -90,6 +90,15 @@ func FindDisputePDA(programID solana.PublicKey, contractPubkey solana.PublicKey)
 	return addr, bump
 }
 
+// FindInsuranceClaimPDA derives the insurance-claim PDA seeded by contract account pubkey.
+// Seeds: [b"insurance-claim", contractPDA]
+func FindInsuranceClaimPDA(programID solana.PublicKey, contractPDA solana.PublicKey) (solana.PublicKey, uint8) {
+	addr, bump, _ := solana.FindProgramAddress(
+		[][]byte{[]byte("insurance-claim"), contractPDA.Bytes()}, programID,
+	)
+	return addr, bump
+}
+
 // DeriveATA derives the Associated Token Account for a wallet + mint.
 func DeriveATA(wallet, mint solana.PublicKey) (solana.PublicKey, error) {
 	ataProgramID := solana.MustPublicKeyFromBase58("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
