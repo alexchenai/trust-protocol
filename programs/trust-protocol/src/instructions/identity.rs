@@ -208,10 +208,13 @@ pub fn handler_calculate_trust_score(
     let identity = &mut ctx.accounts.agent_identity;
     let now = Clock::get()?.unix_timestamp;
 
-    // If fraud-flagged: TrustScore = 0 always
+    // Whitepaper §4.4: S_penalty += 100 * fraud_flags.
+    // GAP-5: Early return is mathematically equivalent to the formula:
+    // 100*fraud_flags dominates all S_base factors (max=100), clamping score to 0.
+    // This is an optimization over computing the full formula, not a semantic deviation.
     if identity.fraud_flags > 0 {
         identity.trust_score = 0;
-        msg!("TrustScore for {}: 0 (fraud flag)", identity.authority);
+        msg!("TrustScore for {}: 0 (fraud flag, whitepaper \u00a74.4 P_fraud=100*flags)", identity.authority);
         return Ok(());
     }
 
