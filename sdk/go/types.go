@@ -331,6 +331,8 @@ const (
 	DisputeStatusResolvedProvider DisputeStatus = 3
 	DisputeStatusResolvedRequester DisputeStatus = 4
 	DisputeStatusEscalated        DisputeStatus = 5
+	// JuryDecided: quorum reached, pending permissionless settlement (whitepaper §5.3)
+	DisputeStatusJuryDecided      DisputeStatus = 6
 )
 
 func (d DisputeStatus) String() string {
@@ -347,6 +349,8 @@ func (d DisputeStatus) String() string {
 		return "ResolvedRequester"
 	case DisputeStatusEscalated:
 		return "Escalated"
+	case DisputeStatusJuryDecided:
+		return "JuryDecided"
 	default:
 		return fmt.Sprintf("Unknown(%d)", d)
 	}
