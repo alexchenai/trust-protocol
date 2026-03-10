@@ -774,3 +774,49 @@ func NewEscalateToAppealInstruction(
 		DataBytes: disc[:],
 	}
 }
+
+// NewJuryVoteInstruction builds the "jury_vote" instruction.
+// Args: voteForProvider bool (Borsh: 1 byte, 0x00=false, 0x01=true)
+// Accounts: juror (signer,writable), contract, dispute (writable), jurorIdentity,
+//           voteRecord (writable, init PDA [b"vote",dispute,juror]), systemProgram
+// Whitepaper Section 5.3: TrustScore>70 required, one vote per juror per dispute.
+// double-vote prevention: init fails if voteRecord already exists.
+func NewJuryVoteInstruction(
+	programID solana.PublicKey,
+	juror solana.PublicKey,
+	contractPDA solana.PublicKey,
+	disputePDA solana.PublicKey,
+	jurorIdentityPDA solana.PublicKey,
+	voteRecordPDA solana.PublicKey,
+	voteForProvider bool,
+) solana.Instruction {
+	disc := AnchorDiscriminator("jury_vote")
+	voteArg := uint8(0)
+	if voteForProvider {
+		voteArg = 1
+	}
+	data := make([]byte, 9) // 8 disc + 1 bool
+	copy(data[:8], disc[:])
+	data[8] = voteArg
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(juror).SIGNER().WRITE(),
+			solana.Meta(contractPDA),
+			solana.Meta(disputePDA).WRITE(),
+			solana.Meta(jurorIdentityPDA),
+			solana.Meta(voteRecordPDA).WRITE(),
+			solana.Meta(SystemProgramID),
+		},
+		DataBytes: data,
+	}
+}
+
+// FindVoteRecordPDA derives the PDA for a jury vote record.
+// Seeds: [b"vote", disputePDA, jurorPubkey]
+func FindVoteRecordPDA(programID, disputePDA, juror solana.PublicKey) (solana.PublicKey, uint8, error) {
+	return solana.FindProgramAddress(
+		[][]byte{[]byte("vote"), disputePDA[:], juror[:]},
+		programID,
+	)
+}

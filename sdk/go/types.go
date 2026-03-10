@@ -472,3 +472,42 @@ func DecodeProofOfExecution(data []byte) (*ProofOfExecution, error) {
 	}
 	return p, nil
 }
+
+// VoteRecord represents an on-chain jury vote record.
+// One per juror per dispute. Prevents double-voting via PDA uniqueness.
+// Seeds: [b"vote", dispute_key, juror_key]
+// Size: 8 (discriminator) + 32 + 32 + 1 + 8 + 1 = 82 bytes total
+type VoteRecord struct {
+	Dispute         solana.PublicKey `json:"dispute"`
+	Juror           solana.PublicKey `json:"juror"`
+	VoteForProvider bool             `json:"vote_for_provider"`
+	VotedAt         int64            `json:"voted_at"`
+	Bump            uint8            `json:"bump"`
+}
+
+// VoteRecordSize is the on-chain account size including 8-byte discriminator.
+const VoteRecordSize = 8 + 32 + 32 + 1 + 8 + 1 // = 82
+
+// DecodeVoteRecord parses raw account data.
+func DecodeVoteRecord(data []byte) (*VoteRecord, error) {
+	const minSize = 73 // 8 disc + 32 + 32 + 1 (dispute+juror+vote)
+	if len(data) < minSize {
+		return nil, fmt.Errorf("vote_record data too short: %d < %d", len(data), minSize)
+	}
+	o := 8 // skip discriminator
+	v := &VoteRecord{}
+	copy(v.Dispute[:], data[o:o+32])
+	o += 32
+	copy(v.Juror[:], data[o:o+32])
+	o += 32
+	v.VoteForProvider = data[o] != 0
+	o++
+	if o+8 <= len(data) {
+		v.VotedAt = int64(binary.LittleEndian.Uint64(data[o : o+8]))
+		o += 8
+	}
+	if o < len(data) {
+		v.Bump = data[o]
+	}
+	return v, nil
+}
