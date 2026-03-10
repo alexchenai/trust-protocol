@@ -44,7 +44,8 @@ pub(crate) fn integer_sqrt(n: u64) -> u64 {
 /// Create a new contract between requester and provider.
 /// Provider must stake: contract_value * factor_stake(TrustScore).
 /// Whitepaper Section 3: Dynamic Staking + Exposure limits (3x capital).
-pub fn handler_create(ctx: Context<CreateContract>, value: u64) -> Result<()> {
+/// currency: 0=SWORN (SPL token, default), 1=SOL (native lamports). Whitepaper §11.8b.
+pub fn handler_create(ctx: Context<CreateContract>, value: u64, currency: u8) -> Result<()> {
     let config = &ctx.accounts.protocol_config;
     let provider_identity = &ctx.accounts.provider_identity;
 
@@ -116,7 +117,11 @@ pub fn handler_create(ctx: Context<CreateContract>, value: u64) -> Result<()> {
     contract.bump = ctx.bumps.contract;
     contract.proposal_expires_at = 0;
     contract.provider_stake_required = 0;
-    contract.currency = Currency::Sworn; // Default: dual-sign flow uses SWORN
+    // Parse currency parameter — GAP-7 fix: allow SOL denomination
+    contract.currency = match currency {
+        1 => Currency::Sol,
+        _ => Currency::Sworn, // 0 or any unknown = SWORN (safe default)
+    };
 
     // Increment contract counter
     let config = &mut ctx.accounts.protocol_config;
@@ -709,6 +714,230 @@ pub struct AcceptContract<'info> {
     pub escrow_vault: UncheckedAccount<'info>,
 
     /// SWORN mint for the burn CPI (10% of fee). Unused for SOL contracts.
+    /// CHECK: Validated key == protocol_config.sworn_mint in handler.
+    #[account(mut)]
+    pub sworn_mint: UncheckedAccount<'info>,
+
+    #[account(
+        seeds = [b"protocol-config"],
+        bump = protocol_config.bump,
+    )]
+    pub protocol_config: Box<Account<'info, ProtocolConfig>>,
+
+    pub token_program: Program<'info, Token>,
+}
+
+// ---------------------------------------------------------------------------
+// GAP-11: Requester-validation timeout
+// Whitepaper Section 3.5: if requester ignores a Delivered contract for 72h,
+// any caller can trigger auto-accept (protects provider from ghosting).
+// Uses poe.submitted_at as the delivery timestamp.
+// ---------------------------------------------------------------------------
+
+/// Permissionless: auto-accept a delivered contract if requester ignores it for 72h.
+/// Whitepaper Section 3.5: provider protected from requester ghosting.
+pub fn handler_timeout_delivery(ctx: Context<TimeoutDelivery>) -> Result<()> {
+    let now = Clock::get()?.unix_timestamp;
+    let contract = &ctx.accounts.contract;
+
+    require!(
+        contract.status == ContractStatus::Delivered,
+        TrustError::InvalidContractStatus
+    );
+
+    // 72-hour validation deadline measured from delivery (poe.submitted_at)
+    const VALIDATION_TIMEOUT: i64 = 72 * 3600;
+    require!(
+        now > ctx.accounts.proof_of_execution.submitted_at + VALIDATION_TIMEOUT,
+        TrustError::TimeoutNotReached
+    );
+
+    let contract_id_val = contract.id;
+    let contract_value = contract.value;
+    let contract_provider_stake = contract.provider_stake;
+    let contract_currency = contract.currency;
+
+    // Protocol fee: 1% (same as accept_contract — Whitepaper Section 11.8)
+    let protocol_fee = contract_value / 100;
+    let fee_treasury = protocol_fee * 70 / 100;
+    let fee_insurance = protocol_fee * 20 / 100;
+    let fee_burn = protocol_fee.saturating_sub(fee_treasury).saturating_sub(fee_insurance);
+    let net_payment = contract_value.saturating_sub(protocol_fee);
+    let provider_release = net_payment
+        .checked_add(contract_provider_stake)
+        .ok_or(TrustError::MathOverflow)?;
+
+    // Mark PoE validated
+    ctx.accounts.proof_of_execution.validated = true;
+
+    // Update contract state
+    {
+        let contract = &mut ctx.accounts.contract;
+        contract.status = ContractStatus::Completed;
+        contract.resolved_at = now;
+    }
+
+    // Update provider identity stats
+    {
+        let provider = &mut ctx.accounts.provider_identity;
+        provider.tasks_completed = provider.tasks_completed.saturating_add(1);
+        provider.last_task_completed_at = now;
+        provider.active_contracts = provider.active_contracts.saturating_sub(1);
+        if contract_currency == Currency::Sol {
+            provider.volume_sol = provider.volume_sol.saturating_add(contract_value);
+        } else {
+            provider.volume_processed = provider.volume_processed.saturating_add(contract_value);
+        }
+    }
+
+    if contract_currency == Currency::Sol {
+        require!(
+            ctx.accounts.provider_token_account.key() == ctx.accounts.contract.provider,
+            TrustError::InvalidDestination
+        );
+        require!(
+            ctx.accounts.treasury_token_account.key() == ctx.accounts.protocol_config.admin,
+            TrustError::InvalidDestination
+        );
+        let contract_info = ctx.accounts.contract.to_account_info();
+        let provider_info = ctx.accounts.provider_token_account.to_account_info();
+        let treasury_info = ctx.accounts.treasury_token_account.to_account_info();
+
+        **contract_info.try_borrow_mut_lamports()? -= provider_release;
+        **provider_info.try_borrow_mut_lamports()? += provider_release;
+
+        let total_fees = fee_treasury.saturating_add(fee_insurance).saturating_add(fee_burn);
+        if total_fees > 0 {
+            **contract_info.try_borrow_mut_lamports()? -= total_fees;
+            **treasury_info.try_borrow_mut_lamports()? += total_fees;
+        }
+    } else {
+        let contract_id_bytes = contract_id_val.to_le_bytes();
+        let (expected_escrow, escrow_bump) = Pubkey::find_program_address(
+            &[b"escrow", &contract_id_bytes],
+            ctx.program_id,
+        );
+        require!(
+            ctx.accounts.escrow_vault.key() == expected_escrow,
+            TrustError::InvalidEscrowVault
+        );
+        let escrow_seeds: &[&[u8]] = &[b"escrow", &contract_id_bytes, &[escrow_bump]];
+        let signer_seeds = &[escrow_seeds];
+
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.escrow_vault.to_account_info(),
+                    to: ctx.accounts.provider_token_account.to_account_info(),
+                    authority: ctx.accounts.escrow_vault.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            provider_release,
+        )?;
+        if fee_treasury > 0 {
+            token::transfer(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    Transfer {
+                        from: ctx.accounts.escrow_vault.to_account_info(),
+                        to: ctx.accounts.treasury_token_account.to_account_info(),
+                        authority: ctx.accounts.escrow_vault.to_account_info(),
+                    },
+                    signer_seeds,
+                ),
+                fee_treasury,
+            )?;
+        }
+        if fee_insurance > 0 {
+            token::transfer(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    Transfer {
+                        from: ctx.accounts.escrow_vault.to_account_info(),
+                        to: ctx.accounts.insurance_vault.to_account_info(),
+                        authority: ctx.accounts.escrow_vault.to_account_info(),
+                    },
+                    signer_seeds,
+                ),
+                fee_insurance,
+            )?;
+        }
+        if fee_burn > 0 {
+            require!(
+                ctx.accounts.sworn_mint.key() == ctx.accounts.protocol_config.sworn_mint,
+                TrustError::InvalidDestination
+            );
+            token::burn(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    Burn {
+                        mint: ctx.accounts.sworn_mint.to_account_info(),
+                        from: ctx.accounts.escrow_vault.to_account_info(),
+                        authority: ctx.accounts.escrow_vault.to_account_info(),
+                    },
+                    signer_seeds,
+                ),
+                fee_burn,
+            )?;
+        }
+    }
+
+    msg!(
+        "Contract #{} auto-completed via delivery timeout (72h). Provider: {} net. Currency: {:?}",
+        contract_id_val, provider_release, contract_currency,
+    );
+    Ok(())
+}
+
+#[derive(Accounts)]
+pub struct TimeoutDelivery<'info> {
+    /// Permissionless: any caller can trigger after 72h
+    #[account(mut)]
+    pub caller: Signer<'info>,
+
+    #[account(
+        mut,
+        constraint = contract.status == ContractStatus::Delivered @ TrustError::InvalidContractStatus,
+    )]
+    pub contract: Box<Account<'info, Contract>>,
+
+    #[account(
+        mut,
+        seeds = [b"poe" as &[u8], contract.key().as_ref()],
+        bump = proof_of_execution.bump,
+    )]
+    pub proof_of_execution: Box<Account<'info, ProofOfExecution>>,
+
+    #[account(
+        mut,
+        seeds = [b"agent-identity" as &[u8], contract.provider.as_ref()],
+        bump = provider_identity.bump,
+    )]
+    pub provider_identity: Box<Account<'info, AgentIdentity>>,
+
+    /// For SWORN: provider's ATA. For SOL: provider's wallet.
+    /// CHECK: For SOL, validated key == contract.provider. For SWORN, token CPI validates.
+    #[account(mut)]
+    pub provider_token_account: UncheckedAccount<'info>,
+
+    /// For SWORN: admin's ATA. For SOL: admin's wallet.
+    /// CHECK: For SOL, validated key == config.admin. For SWORN, token CPI validates.
+    #[account(mut)]
+    pub treasury_token_account: UncheckedAccount<'info>,
+
+    /// For SWORN: insurance vault ATA. For SOL: unused (pass dummy).
+    /// CHECK: Validated in handler.
+    #[account(mut)]
+    pub insurance_vault: UncheckedAccount<'info>,
+
+    /// Escrow vault PDA for SWORN contracts.
+    /// CHECK: Validated via find_program_address.
+    #[account(mut)]
+    pub escrow_vault: UncheckedAccount<'info>,
+
+    /// SWORN mint for burn CPI. Unused for SOL.
     /// CHECK: Validated key == protocol_config.sworn_mint in handler.
     #[account(mut)]
     pub sworn_mint: UncheckedAccount<'info>,

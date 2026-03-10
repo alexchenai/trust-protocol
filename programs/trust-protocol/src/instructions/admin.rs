@@ -337,3 +337,42 @@ pub struct ForceMatureAgent<'info> {
     #[account(mut)]
     pub agent_identity: Account<'info, AgentIdentity>,
 }
+
+/// Admin: Update configurable ProtocolConfig parameters.
+/// Whitepaper §8: Phase 0-2 admin-controlled; Phase 3+ via DAO.
+/// Each field is Option<T> — pass None to leave unchanged.
+pub fn handler_update_config(ctx: Context<UpdateConfig>, params: UpdateConfigParams) -> Result<()> {
+    let config = &mut ctx.accounts.protocol_config;
+    if let Some(v) = params.min_identity_bond { config.min_identity_bond = v; }
+    if let Some(v) = params.max_identity_bond { config.max_identity_bond = v; }
+    if let Some(v) = params.maturation_period  { config.maturation_period = v; }
+    msg!(
+        "ProtocolConfig updated: min_bond={} max_bond={} maturation_period={}",
+        config.min_identity_bond, config.max_identity_bond, config.maturation_period
+    );
+    Ok(())
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize)]
+pub struct UpdateConfigParams {
+    /// New min identity bond in SWORN lamports. None = no change.
+    pub min_identity_bond: Option<u64>,
+    /// New max identity bond in SWORN lamports. None = no change.
+    pub max_identity_bond: Option<u64>,
+    /// New maturation period in seconds. None = no change.
+    pub maturation_period: Option<i64>,
+}
+
+#[derive(Accounts)]
+pub struct UpdateConfig<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"protocol-config"],
+        bump = protocol_config.bump,
+        constraint = protocol_config.admin == admin.key(),
+    )]
+    pub protocol_config: Account<'info, ProtocolConfig>,
+}

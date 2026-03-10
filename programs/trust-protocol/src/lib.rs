@@ -56,8 +56,9 @@ pub mod trust_protocol {
 
     /// Create contract. Provider stakes based on TrustScore.
     /// stake = value * factor_stake(score). Score 0 = 100%, Score 100 = 5%.
-    pub fn create_contract(ctx: Context<CreateContract>, value: u64) -> Result<()> {
-        contract::handler_create(ctx, value)
+    /// currency: 0=SWORN (default), 1=SOL. Whitepaper §11.8b.
+    pub fn create_contract(ctx: Context<CreateContract>, value: u64, currency: u8) -> Result<()> {
+        contract::handler_create(ctx, value, currency)
     }
 
     /// Propose a contract. Only requester signs; deposits escrow.
@@ -99,6 +100,12 @@ pub mod trust_protocol {
     /// Whitepaper Section 3/5: failed delivery = tasks_abandoned++, active_contracts--.
     pub fn timeout_contract(ctx: Context<TimeoutContract>) -> Result<()> {
         contract::handler_timeout(ctx)
+    }
+
+    /// Permissionless: auto-accept Delivered contract if requester ignores it for 72h.
+    /// Whitepaper Section 3.5: protects provider from requester ghosting. GAP-11.
+    pub fn timeout_delivery(ctx: Context<TimeoutDelivery>) -> Result<()> {
+        contract::handler_timeout_delivery(ctx)
     }
 
     // === Dispute Resolution (Whitepaper Section 5) ===
@@ -206,9 +213,15 @@ pub mod trust_protocol {
     }
 
     /// Force-mature an agent (devnet testing only).
-    /// Bypasses 30-day maturation period for testing contract lifecycle.
+    /// Bypasses maturation period for testing contract lifecycle.
     pub fn force_mature(ctx: Context<ForceMatureAgent>) -> Result<()> {
         admin::handler_force_mature(ctx)
+    }
+
+    /// Admin: update protocol config parameters (min_bond, maturation_period, etc.).
+    /// Whitepaper §8: Phase 0-2 admin-controlled. GAP-1/GAP-2 fix.
+    pub fn update_config(ctx: Context<UpdateConfig>, params: UpdateConfigParams) -> Result<()> {
+        admin::handler_update_config(ctx, params)
     }
 
     /// Migrate AgentIdentity v1 (95 bytes) to v2 (123 bytes).

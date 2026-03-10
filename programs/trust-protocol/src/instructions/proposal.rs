@@ -162,9 +162,13 @@ pub fn handler_accept_proposal(ctx: Context<AcceptProposal>) -> Result<()> {
     }
 
     // Transition to Active
+    let now_ts = Clock::get()?.unix_timestamp;
     let contract = &mut ctx.accounts.contract;
     contract.provider_stake = stake_required;
     contract.status = ContractStatus::Active;
+    // GAP-6 fix: reset created_at to acceptance time so the 72h delivery
+    // window starts from when the contract becomes Active, not from proposal time.
+    contract.created_at = now_ts;
 
     // Enforce exposure limit and increment active_contracts counter (Whitepaper Section 7.3)
     // NOTE: AcceptProposal struct must include provider_identity (added below)

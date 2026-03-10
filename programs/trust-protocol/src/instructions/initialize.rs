@@ -36,9 +36,9 @@ pub fn handler(ctx: Context<Initialize>, params: InitializeParams) -> Result<()>
 
 #[derive(AnchorSerialize, AnchorDeserialize)]
 pub struct InitializeParams {
-    /// Minimum identity bond in SWORN lamports (2 SWORN = 2_000_000_000)
+    /// Minimum identity bond in SWORN lamports (3 SWORN = 3_000_000 with 6 decimals — whitepaper §2.1)
     pub min_identity_bond: u64,
-    /// Maximum identity bond in SWORN lamports (5 SWORN = 5_000_000_000)
+    /// Maximum identity bond in SWORN lamports (5 SWORN = 5_000_000 with 6 decimals)
     pub max_identity_bond: u64,
 }
 
@@ -47,7 +47,7 @@ pub struct Initialize<'info> {
     #[account(mut)]
     pub admin: Signer<'info>,
 
-    /// The SWORN token mint (fixed supply 100M, decimals 9)
+    /// The SWORN token mint (fixed supply 100M, decimals 6 — whitepaper §11.2)
     pub sworn_mint: Account<'info, Mint>,
 
     #[account(
