@@ -59,32 +59,28 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-anchor-build-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-anchor-build-${{ hashFiles('**/Cargo.lock') }}-v2
 
-      - name: Setup wallets
+      - name: Setup wallet
         run: |
           echo '${{ secrets.DEVNET_WALLET_KEY }}' > /tmp/deployer.json
           solana config set --url devnet
           solana config set --keypair /tmp/deployer.json
-          DEPLOYER=$(solana-keygen pubkey /tmp/deployer.json)
-          echo "Deployer: $DEPLOYER"
+          echo "Wallet: $(solana-keygen pubkey /tmp/deployer.json)"
           solana balance
-          echo "DEPLOYER_PUBKEY=$DEPLOYER" >> $GITHUB_ENV
 
-          # Create fresh buffer-funder keypair (new address avoids rate limits)
-          solana-keygen new --no-bip39-passphrase -o /tmp/funder.json --silent
-          FUNDER=$(solana-keygen pubkey /tmp/funder.json)
-          echo "Fresh buffer funder: $FUNDER"
-          echo "FUNDER_PUBKEY=$FUNDER" >> $GITHUB_ENV
-
-      - name: Fund buffer-funder keypair via airdrop
+      - name: Attempt devnet airdrop (best-effort)
         run: |
-          echo "Requesting 2 SOL airdrop to fresh funder (new address, no rate limit)..."
-          solana airdrop 2 $FUNDER_PUBKEY --url devnet || echo "Airdrop failed"
-          echo "Also trying airdrop to deployer..."
-          solana airdrop 2 --url devnet || echo "Deployer airdrop failed (rate limited)"
-          echo "Funder balance: $(solana balance $FUNDER_PUBKEY --url devnet)"
-          echo "Deployer balance:"
+          echo "Attempting airdrop from multiple sources..."
+          DEPLOYER=$(solana-keygen pubkey /tmp/deployer.json)
+          # Standard RPC airdrop
+          solana airdrop 2 --url devnet && echo "RPC airdrop succeeded" || echo "RPC airdrop failed"
+          # Solana web faucet API
+          curl -s -m 10 -X POST "https://faucet.solana.com/api/request_airdrop" \
+            -H "Content-Type: application/json" \
+            -d "{\"pubkey\":\"$DEPLOYER\",\"amount\":1}" 2>&1 | head -c 200 || true
+          echo ""
+          echo "Balance after airdrop attempts:"
           solana balance
 
       - name: Close orphaned buffer accounts
@@ -93,16 +89,19 @@ jobs:
           solana program close --buffers --url devnet || echo "No buffers to close"
           solana balance
 
-      - name: Build program
+      - name: Build program (opt-level=z for size reduction)
         run: anchor build
 
-      - name: Extend program data if binary grew
+      - name: Check sizes and extend if needed
         run: |
           PROGRAM_ID="CSBAc1SiMALr4rnuCoB17BsddzthB4RAhjibGvyt6p6S"
           NEW_SIZE=$(wc -c < target/deploy/trust_protocol.so)
           echo "New binary size: $NEW_SIZE bytes"
           CURRENT_SIZE=$(solana program show $PROGRAM_ID --url devnet 2>&1 | grep -oP 'Data Length: \K[0-9]+' || echo "0")
           echo "Current program data size: ${CURRENT_SIZE:-0} bytes"
+          DEPLOYER_BAL=$(solana balance | awk '{print $1}')
+          echo "Deployer balance: $DEPLOYER_BAL SOL"
+
           if [ -z "$CURRENT_SIZE" ] || [ "$CURRENT_SIZE" = "0" ]; then
             echo "Could not determine current size, skipping extend"
           elif [ "$NEW_SIZE" -gt "$CURRENT_SIZE" ]; then
@@ -115,55 +114,17 @@ jobs:
             echo "No extension needed (new=$NEW_SIZE <= current=$CURRENT_SIZE)."
           fi
 
-      - name: Write buffer using funder (avoids deployer SOL bottleneck)
-        run: |
-          FUNDER_BAL=$(solana balance $FUNDER_PUBKEY --url devnet | awk '{print $1}')
-          echo "Funder balance: $FUNDER_BAL SOL"
-          echo "Deployer balance:"
-          solana balance
-
-          if (( $(echo "$FUNDER_BAL > 1.0" | bc -l) )); then
-            echo "Writing program buffer using funder as fee payer..."
-            BUFFER_OUT=$(solana program write-buffer \
-              target/deploy/trust_protocol.so \
-              --fee-payer /tmp/funder.json \
-              --url devnet 2>&1)
-            echo "$BUFFER_OUT"
-            BUFFER=$(echo "$BUFFER_OUT" | grep -oP 'Buffer: \K\S+')
-            echo "Buffer address: $BUFFER"
-
-            if [ -n "$BUFFER" ]; then
-              echo "Transferring buffer authority to deployer..."
-              solana program set-buffer-authority $BUFFER \
-                --new-buffer-authority $DEPLOYER_PUBKEY \
-                --keypair /tmp/funder.json \
-                --url devnet
-              echo "BUFFER_ADDR=$BUFFER" >> $GITHUB_ENV
-              echo "USE_BUFFER=true" >> $GITHUB_ENV
-            else
-              echo "Could not extract buffer address, will fall back to direct deploy"
-              echo "USE_BUFFER=false" >> $GITHUB_ENV
-            fi
-          else
-            echo "Funder has insufficient SOL, falling back to direct deploy"
-            echo "USE_BUFFER=false" >> $GITHUB_ENV
-          fi
-
-      - name: Upgrade program on devnet
+      - name: Deploy program
         run: |
           PROGRAM_ID="CSBAc1SiMALr4rnuCoB17BsddzthB4RAhjibGvyt6p6S"
-          if [ "$USE_BUFFER" = "true" ] && [ -n "$BUFFER_ADDR" ]; then
-            echo "Upgrading from pre-written buffer: $BUFFER_ADDR"
-            solana program upgrade $BUFFER_ADDR $PROGRAM_ID --url devnet
-          else
-            echo "Direct deploy (fallback path)..."
-            solana program deploy \
-              target/deploy/trust_protocol.so \
-              --program-id $PROGRAM_ID \
-              --upgrade-authority /tmp/deployer.json \
-              --url devnet
-          fi
-          echo "Program upgraded successfully!"
+          echo "Deploying program (binary size $(wc -c < target/deploy/trust_protocol.so) bytes)..."
+          echo "Deployer balance: $(solana balance)"
+          solana program deploy \
+            target/deploy/trust_protocol.so \
+            --program-id $PROGRAM_ID \
+            --upgrade-authority /tmp/deployer.json \
+            --url devnet
+          echo "Program deployed successfully!"
 
       - name: Verify deployment
         run: |
@@ -174,7 +135,4 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: |
-          rm -f /tmp/deployer.json /tmp/funder.json
-          # Close any leftover buffers from funder
-          solana program close --buffers --keypair /tmp/funder.json --url devnet 2>/dev/null || true
+        run: rm -f /tmp/deployer.json
