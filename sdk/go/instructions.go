@@ -108,6 +108,7 @@ func NewForceMatureInstruction(
 
 // NewCreateContractInstruction builds "create_contract" with value arg.
 // The escrow vault is init'd in this instruction (requires system_program).
+// providerIdentityPDA is mutable (active_contracts increment + exposure limit check).
 func NewCreateContractInstruction(
 	programID solana.PublicKey,
 	requester solana.PublicKey,
@@ -130,7 +131,7 @@ func NewCreateContractInstruction(
 		AccountValues: solana.AccountMetaSlice{
 			solana.Meta(requester).SIGNER().WRITE(),
 			solana.Meta(provider),
-			solana.Meta(providerIdentityPDA),
+			solana.Meta(providerIdentityPDA).WRITE(), // mutable: active_contracts
 			solana.Meta(contractPDA).WRITE(),
 			solana.Meta(requesterTokenAccount).WRITE(),
 			solana.Meta(providerTokenAccount).WRITE(),
@@ -145,10 +146,12 @@ func NewCreateContractInstruction(
 }
 
 // NewDeliverContractInstruction builds "deliver_contract" with PoE data.
+// providerIdentityPDA is required to track total_deliveries.
 func NewDeliverContractInstruction(
 	programID solana.PublicKey,
 	provider solana.PublicKey,
 	contractPDA solana.PublicKey,
+	providerIdentityPDA solana.PublicKey,
 	poePDA solana.PublicKey,
 	outputHash [32]byte,
 	arweaveTx string,
@@ -165,6 +168,7 @@ func NewDeliverContractInstruction(
 		AccountValues: solana.AccountMetaSlice{
 			solana.Meta(provider).SIGNER().WRITE(),
 			solana.Meta(contractPDA).WRITE(),
+			solana.Meta(providerIdentityPDA).WRITE(), // tracks total_deliveries
 			solana.Meta(poePDA).WRITE(),
 			solana.Meta(SystemProgramID),
 		},
@@ -173,6 +177,7 @@ func NewDeliverContractInstruction(
 }
 
 // NewAcceptContractInstruction builds "accept_contract" (no extra args).
+// swornMint required for 10% burn CPI on SWORN contracts. Pass zeroed key for SOL.
 func NewAcceptContractInstruction(
 	programID solana.PublicKey,
 	requester solana.PublicKey,
@@ -183,6 +188,7 @@ func NewAcceptContractInstruction(
 	treasuryTokenAccount solana.PublicKey,
 	insuranceVault solana.PublicKey,
 	escrowVaultPDA solana.PublicKey,
+	swornMint solana.PublicKey,
 	configPDA solana.PublicKey,
 ) solana.Instruction {
 	disc := AnchorDiscriminator("accept_contract")
@@ -197,6 +203,7 @@ func NewAcceptContractInstruction(
 			solana.Meta(treasuryTokenAccount).WRITE(),
 			solana.Meta(insuranceVault).WRITE(),
 			solana.Meta(escrowVaultPDA).WRITE(),
+			solana.Meta(swornMint).WRITE(), // for burn CPI (10% fee)
 			solana.Meta(configPDA),
 			solana.Meta(TokenProgramID),
 		},
@@ -329,6 +336,7 @@ func NewProposeContractInstruction(
 
 // NewAcceptProposalInstruction builds "accept_proposal" (no extra args).
 // Provider signs to accept a proposed contract by depositing stake.
+// providerIdentityPDA: mutable - validates ban, enforces exposure limit, tracks active_contracts.
 func NewAcceptProposalInstruction(
 	programID solana.PublicKey,
 	provider solana.PublicKey,
@@ -345,6 +353,7 @@ func NewAcceptProposalInstruction(
 		AccountValues: solana.AccountMetaSlice{
 			solana.Meta(provider).SIGNER().WRITE(),
 			solana.Meta(contractPDA).WRITE(),
+			solana.Meta(providerIdentityPDA).WRITE(), // exposure limit + active_contracts
 			solana.Meta(providerTokenAccount).WRITE(),
 			solana.Meta(escrowVaultPDA).WRITE(),
 			solana.Meta(configPDA),
@@ -503,18 +512,18 @@ func NewResolveDisputeInstruction(
 
 // NewRedeliverInDisputeInstruction builds "redeliver_in_dispute" with output_hash and arweave_tx args.
 // The provider signs to re-deliver corrected work during a Level 1 dispute.
-// Accounts: provider (signer, writable), contract (writable), dispute (writable), proof_of_execution (writable).
+// providerIdentityPDA required to track total_deliveries.
 func NewRedeliverInDisputeInstruction(
 	programID solana.PublicKey,
 	provider solana.PublicKey,
 	contractPDA solana.PublicKey,
+	providerIdentityPDA solana.PublicKey,
 	disputePDA solana.PublicKey,
 	poePDA solana.PublicKey,
 	outputHash [32]byte,
 	arweaveTx string,
 ) solana.Instruction {
 	disc := AnchorDiscriminator("redeliver_in_dispute")
-	// data: 8 disc + 32 hash + 4 strlen + bytes
 	arweaveBytes := []byte(arweaveTx)
 	data := make([]byte, 8+32+4+len(arweaveBytes))
 	copy(data[0:8], disc[:])
@@ -526,6 +535,7 @@ func NewRedeliverInDisputeInstruction(
 		AccountValues: solana.AccountMetaSlice{
 			solana.Meta(provider).SIGNER().WRITE(),
 			solana.Meta(contractPDA).WRITE(),
+			solana.Meta(providerIdentityPDA).WRITE(), // tracks total_deliveries
 			solana.Meta(disputePDA).WRITE(),
 			solana.Meta(poePDA).WRITE(),
 		},
@@ -538,8 +548,8 @@ func NewRedeliverInDisputeInstruction(
 // Resolves dispute + completes contract + releases payment with protocol fee.
 // Accounts: requester, contract, dispute, proof_of_execution, provider_identity,
 //
-//	provider_token_account, treasury_token_account, insurance_vault,
-//	escrow_vault, protocol_config, token_program.
+// NewAcceptCorrectionInstruction builds "accept_correction" (no extra args).
+// swornMint required for 10% burn CPI on SWORN contracts.
 func NewAcceptCorrectionInstruction(
 	programID solana.PublicKey,
 	requester solana.PublicKey,
@@ -551,6 +561,7 @@ func NewAcceptCorrectionInstruction(
 	treasuryTokenAccount solana.PublicKey,
 	insuranceVault solana.PublicKey,
 	escrowVaultPDA solana.PublicKey,
+	swornMint solana.PublicKey,
 	configPDA solana.PublicKey,
 ) solana.Instruction {
 	disc := AnchorDiscriminator("accept_correction")
@@ -566,6 +577,7 @@ func NewAcceptCorrectionInstruction(
 			solana.Meta(treasuryTokenAccount).WRITE(),
 			solana.Meta(insuranceVault).WRITE(),
 			solana.Meta(escrowVaultPDA).WRITE(),
+			solana.Meta(swornMint).WRITE(), // for burn CPI (10% fee)
 			solana.Meta(configPDA),
 			solana.Meta(TokenProgramID),
 		},
@@ -593,5 +605,51 @@ func NewMigrateDisputeSizeInstruction(
 			solana.Meta(SystemProgramID),
 		},
 		DataBytes: disc[:],
+	}
+}
+
+// NewCheckMaturationInstruction builds "check_maturation" (no extra args).
+// Permissionless: any caller can trigger maturation check.
+// Sets matured=true if agent has 14+ days AND 5+ completed tasks.
+// Accounts: agent_identity_pda (writable), config_pda (read).
+func NewCheckMaturationInstruction(
+	programID solana.PublicKey,
+	agentIdentityPDA solana.PublicKey,
+	configPDA solana.PublicKey,
+) solana.Instruction {
+	disc := AnchorDiscriminator("check_maturation")
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(agentIdentityPDA).WRITE(),
+			solana.Meta(configPDA),
+		},
+		DataBytes: disc[:],
+	}
+}
+
+// NewCalculateTrustScoreInstruction builds "calculate_trust_score" with sol_to_sworn_rate arg.
+// Permissionless: any caller can trigger TrustScore recalculation.
+// Implements full whitepaper formula (5 factors + penalties + decay) on-chain.
+// solToSwornRate: SOL lamport to SWORN lamport exchange rate for volume normalization.
+//   Use 0 to treat SOL volume as 0 (conservative).
+// Accounts: agent_identity_pda (writable), config_pda (read).
+func NewCalculateTrustScoreInstruction(
+	programID solana.PublicKey,
+	agentIdentityPDA solana.PublicKey,
+	configPDA solana.PublicKey,
+	solToSwornRate uint64,
+) solana.Instruction {
+	disc := AnchorDiscriminator("calculate_trust_score")
+	var data [16]byte
+	copy(data[0:8], disc[:])
+	binary.LittleEndian.PutUint64(data[8:16], solToSwornRate)
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(agentIdentityPDA).WRITE(),
+			solana.Meta(configPDA),
+		},
+		DataBytes: data[:],
 	}
 }

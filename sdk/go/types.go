@@ -28,26 +28,33 @@ func AccountDiscriminator(accountName string) [8]byte {
 // ---------------------------------------------------------------------------
 
 // AgentIdentity represents a soulbound agent identity on-chain.
-// Anchor discriminator: 8 bytes, then 87 bytes of fields = 95 total.
+// Anchor discriminator: 8 bytes, then 115 bytes of fields = 123 total.
+// Field order mirrors state.rs exactly (Borsh serialization).
 type AgentIdentity struct {
-	Authority       solana.PublicKey `json:"authority"`
-	IdentityBond    uint64           `json:"identity_bond"`
-	RegisteredAt    int64            `json:"registered_at"`
-	Matured         bool             `json:"matured"`
-	TrustScore      uint16           `json:"trust_score"`
-	TasksCompleted  uint64           `json:"tasks_completed"`
-	VolumeProcessed uint64           `json:"volume_processed"`
-	DisputesLost    uint32           `json:"disputes_lost"`
-	DisputesWon     uint32           `json:"disputes_won"`
-	TasksAbandoned  uint32           `json:"tasks_abandoned"`
-	FraudFlags      uint32           `json:"fraud_flags"`
-	SponsorBonus    uint16           `json:"sponsor_bonus"`
-	Banned          bool             `json:"banned"`
-	Bump            uint8            `json:"bump"`
+	Authority              solana.PublicKey `json:"authority"`
+	IdentityBond           uint64           `json:"identity_bond"`
+	RegisteredAt           int64            `json:"registered_at"`
+	Matured                bool             `json:"matured"`
+	TrustScore             uint16           `json:"trust_score"`
+	TasksCompleted         uint64           `json:"tasks_completed"`
+	VolumeProcessed        uint64           `json:"volume_processed"` // SWORN lamports
+	VolumeSol              uint64           `json:"volume_sol"`       // SOL lamports
+	DisputesLost           uint32           `json:"disputes_lost"`
+	DisputesWon            uint32           `json:"disputes_won"`
+	TasksAbandoned         uint32           `json:"tasks_abandoned"`
+	FraudFlags             uint32           `json:"fraud_flags"`
+	TotalDeliveries        uint32           `json:"total_deliveries"`
+	CorrectionsReceived    uint32           `json:"corrections_received"`
+	ActiveContracts        uint32           `json:"active_contracts"`
+	LastTaskCompletedAt    int64            `json:"last_task_completed_at"`
+	SponsorBonus           uint16           `json:"sponsor_bonus"`
+	Banned                 bool             `json:"banned"`
+	Bump                   uint8            `json:"bump"`
 }
 
 // AgentIdentitySize is the on-chain size including Anchor discriminator.
-const AgentIdentitySize = 8 + 32 + 8 + 8 + 1 + 2 + 8 + 8 + 4 + 4 + 4 + 4 + 2 + 1 + 1 // 95
+// 8 disc + 32 + 8 + 8 + 1 + 2 + 8 + 8 + 8 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 8 + 2 + 1 + 1 = 123
+const AgentIdentitySize = 123
 
 // DecodeAgentIdentity parses raw account data (including 8-byte discriminator).
 func DecodeAgentIdentity(data []byte) (*AgentIdentity, error) {
@@ -70,6 +77,8 @@ func DecodeAgentIdentity(data []byte) (*AgentIdentity, error) {
 	o += 8
 	a.VolumeProcessed = binary.LittleEndian.Uint64(data[o : o+8])
 	o += 8
+	a.VolumeSol = binary.LittleEndian.Uint64(data[o : o+8])
+	o += 8
 	a.DisputesLost = binary.LittleEndian.Uint32(data[o : o+4])
 	o += 4
 	a.DisputesWon = binary.LittleEndian.Uint32(data[o : o+4])
@@ -78,6 +87,14 @@ func DecodeAgentIdentity(data []byte) (*AgentIdentity, error) {
 	o += 4
 	a.FraudFlags = binary.LittleEndian.Uint32(data[o : o+4])
 	o += 4
+	a.TotalDeliveries = binary.LittleEndian.Uint32(data[o : o+4])
+	o += 4
+	a.CorrectionsReceived = binary.LittleEndian.Uint32(data[o : o+4])
+	o += 4
+	a.ActiveContracts = binary.LittleEndian.Uint32(data[o : o+4])
+	o += 4
+	a.LastTaskCompletedAt = int64(binary.LittleEndian.Uint64(data[o : o+8]))
+	o += 8
 	a.SponsorBonus = binary.LittleEndian.Uint16(data[o : o+2])
 	o += 2
 	a.Banned = data[o] == 1
