@@ -135,6 +135,17 @@ jobs:
           echo ""
           echo "Explorer: https://explorer.solana.com/address/$PROGRAM_ID?cluster=devnet"
 
+      - name: Fix on-chain config (GAP-1/GAP-2)
+        run: |
+          echo "Updating ProtocolConfig: min_bond=3_000_000, maturation_period=1_209_600 (14d)..."
+          cd scripts/update-config
+          go mod tidy
+          SOLANA_KEYPAIR_PATH=/tmp/deployer.json \
+          SOLANA_RPC_URL=https://api.devnet.solana.com \
+          PROGRAM_ID=CSBAc1SiMALr4rnuCoB17BsddzthB4RAhjibGvyt6p6S \
+          go run main.go || echo "update_config failed (non-fatal: program may need re-init)"
+          cd ../..
+
       - name: Cleanup
         if: always()
         run: rm -f /tmp/deployer.json
