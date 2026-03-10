@@ -628,6 +628,43 @@ func NewCheckMaturationInstruction(
 	}
 }
 
+// NewTimeoutContractInstruction builds "timeout_contract" (no extra args).
+// Permissionless: any caller can trigger after the 72h delivery deadline.
+// Provider's stake confiscated: 60% insurance, 25% requester bonus, 15% burn.
+// Accounts (in order): caller (signer, writable), contract (writable), provider_identity (writable),
+// requester_token_account (writable), escrow_vault (writable), insurance_pool (writable),
+// insurance_vault (writable), sworn_mint (writable), protocol_config (read), token_program.
+func NewTimeoutContractInstruction(
+	programID solana.PublicKey,
+	caller solana.PublicKey,
+	contractPDA solana.PublicKey,
+	providerIdentityPDA solana.PublicKey,
+	requesterTokenAccount solana.PublicKey,
+	escrowVaultPDA solana.PublicKey,
+	insurancePoolPDA solana.PublicKey,
+	insuranceVault solana.PublicKey,
+	swornMint solana.PublicKey,
+	configPDA solana.PublicKey,
+) solana.Instruction {
+	disc := AnchorDiscriminator("timeout_contract")
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(caller).SIGNER().WRITE(),
+			solana.Meta(contractPDA).WRITE(),
+			solana.Meta(providerIdentityPDA).WRITE(),
+			solana.Meta(requesterTokenAccount).WRITE(),
+			solana.Meta(escrowVaultPDA).WRITE(),
+			solana.Meta(insurancePoolPDA).WRITE(),
+			solana.Meta(insuranceVault).WRITE(),
+			solana.Meta(swornMint).WRITE(),
+			solana.Meta(configPDA),
+			solana.Meta(TokenProgramID),
+		},
+		DataBytes: disc[:],
+	}
+}
+
 // NewMigrateAgentIdentityInstruction builds "migrate_agent_identity" (no extra args).
 // Reallocs an old AgentIdentity account from 95 bytes (v1) to 123 bytes (v2).
 // Inserts volume_sol, total_deliveries, corrections_received, active_contracts,

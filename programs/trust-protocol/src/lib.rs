@@ -93,6 +93,14 @@ pub mod trust_protocol {
         contract::handler_accept(ctx)
     }
 
+    /// Permissionless timeout: resolves abandoned contract after 72h delivery deadline.
+    /// Provider's stake is confiscated (60% insurance, 25% requester bonus, 15% burn).
+    /// Requester receives full escrow + 25% stake bonus.
+    /// Whitepaper Section 3/5: failed delivery = tasks_abandoned++, active_contracts--.
+    pub fn timeout_contract(ctx: Context<TimeoutContract>) -> Result<()> {
+        contract::handler_timeout(ctx)
+    }
+
     // === Dispute Resolution (Whitepaper Section 5) ===
     // 4 levels: Direct Correction -> Private Rounds -> Public Jury -> Appeal
 

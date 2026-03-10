@@ -421,6 +421,217 @@ pub struct CreateContract<'info> {
     pub system_program: Program<'info, System>,
 }
 
+/// Anyone can call this to trigger a timed-out contract.
+/// Whitepaper Section 3 / Section 5: If provider fails to deliver within 72h,
+/// requester recovers escrow and provider's stake is confiscated (60% insurance,
+/// 25% winner, 15% burn).
+/// Permissionless: any caller can trigger after the deadline.
+pub fn handler_timeout(
+    ctx: Context<TimeoutContract>,
+) -> Result<()> {
+    let now = Clock::get()?.unix_timestamp;
+    let contract = &ctx.accounts.contract;
+
+    require!(
+        contract.status == ContractStatus::Active,
+        TrustError::InvalidContractStatus
+    );
+
+    // 72-hour delivery deadline
+    const TIMEOUT_SECONDS: i64 = 72 * 3600;
+    require!(
+        now > contract.created_at + TIMEOUT_SECONDS,
+        TrustError::TimeoutNotReached
+    );
+
+    let contract_id_val = contract.id;
+    let contract_value = contract.value;
+    let provider_stake = contract.provider_stake;
+    let contract_currency = contract.currency;
+    let burn_rate_bps = ctx.accounts.protocol_config.burn_rate_bps;
+    let insurance_rate_bps = ctx.accounts.protocol_config.insurance_rate_bps;
+
+    // Stake confiscation split: 15% burn, 60% insurance, 25% requester bonus
+    let burn_amount = (provider_stake as u128 * burn_rate_bps as u128 / 10_000) as u64;
+    let insurance_amount = (provider_stake as u128 * insurance_rate_bps as u128 / 10_000) as u64;
+    let winner_amount = provider_stake
+        .saturating_sub(burn_amount)
+        .saturating_sub(insurance_amount);
+    let refund = contract_value
+        .checked_add(winner_amount)
+        .ok_or(TrustError::MathOverflow)?;
+
+    // Update contract state
+    {
+        let contract = &mut ctx.accounts.contract;
+        contract.status = ContractStatus::ResolvedRequester;
+        contract.resolved_at = now;
+    }
+
+    // Update provider identity: timed out = abandoned task
+    {
+        let provider = &mut ctx.accounts.provider_identity;
+        provider.active_contracts = provider.active_contracts.saturating_sub(1);
+        provider.tasks_abandoned = provider.tasks_abandoned.saturating_add(1);
+    }
+
+    if contract_currency == Currency::Sol {
+        // SOL-denominated: lamport transfers from contract PDA
+        require!(
+            ctx.accounts.requester_token_account.key() == ctx.accounts.contract.requester,
+            TrustError::InvalidDestination
+        );
+
+        let contract_info = ctx.accounts.contract.to_account_info();
+        let requester_info = ctx.accounts.requester_token_account.to_account_info();
+
+        // Return contract value + 25% winner bonus to requester
+        **contract_info.try_borrow_mut_lamports()? -= refund;
+        **requester_info.try_borrow_mut_lamports()? += refund;
+
+        // For SOL: insurance + burn portions go to requester (admin redistributes off-chain)
+        let remainder = insurance_amount
+            .checked_add(burn_amount)
+            .ok_or(TrustError::MathOverflow)?;
+        if remainder > 0 {
+            **contract_info.try_borrow_mut_lamports()? -= remainder;
+            **requester_info.try_borrow_mut_lamports()? += remainder;
+            ctx.accounts.insurance_pool.total_balance =
+                ctx.accounts.insurance_pool.total_balance.saturating_add(insurance_amount);
+        }
+    } else {
+        // SWORN-denominated: SPL token transfers from escrow PDA
+        let contract_id_bytes = contract_id_val.to_le_bytes();
+        let (expected_escrow, escrow_bump) = Pubkey::find_program_address(
+            &[b"escrow", &contract_id_bytes],
+            ctx.program_id,
+        );
+        require!(
+            ctx.accounts.escrow_vault.key() == expected_escrow,
+            TrustError::InvalidEscrowVault
+        );
+        let escrow_seeds: &[&[u8]] = &[b"escrow", &contract_id_bytes, &[escrow_bump]];
+        let signer_seeds = &[escrow_seeds];
+
+        // CPI 1: Return value + 25% stake bonus to requester
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.escrow_vault.to_account_info(),
+                    to: ctx.accounts.requester_token_account.to_account_info(),
+                    authority: ctx.accounts.escrow_vault.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            refund,
+        )?;
+
+        // CPI 2: 60% stake to insurance vault
+        if insurance_amount > 0 {
+            token::transfer(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    Transfer {
+                        from: ctx.accounts.escrow_vault.to_account_info(),
+                        to: ctx.accounts.insurance_vault.to_account_info(),
+                        authority: ctx.accounts.escrow_vault.to_account_info(),
+                    },
+                    signer_seeds,
+                ),
+                insurance_amount,
+            )?;
+            ctx.accounts.insurance_pool.total_balance =
+                ctx.accounts.insurance_pool.total_balance.saturating_add(insurance_amount);
+        }
+
+        // CPI 3: Burn 15% stake
+        if burn_amount > 0 {
+            require!(
+                ctx.accounts.sworn_mint.key() == ctx.accounts.protocol_config.sworn_mint,
+                TrustError::InvalidDestination
+            );
+            token::burn(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    Burn {
+                        mint: ctx.accounts.sworn_mint.to_account_info(),
+                        from: ctx.accounts.escrow_vault.to_account_info(),
+                        authority: ctx.accounts.escrow_vault.to_account_info(),
+                    },
+                    signer_seeds,
+                ),
+                burn_amount,
+            )?;
+        }
+    }
+
+    msg!(
+        "Contract #{} timed out (72h). Refund: {}, Insurance: {}, Burn: {}. Currency: {:?}",
+        contract_id_val,
+        refund,
+        insurance_amount,
+        burn_amount,
+        contract_currency,
+    );
+    Ok(())
+}
+
+#[derive(Accounts)]
+pub struct TimeoutContract<'info> {
+    /// Permissionless: anyone can trigger the timeout after 72h
+    #[account(mut)]
+    pub caller: Signer<'info>,
+
+    #[account(
+        mut,
+        constraint = contract.status == ContractStatus::Active @ TrustError::InvalidContractStatus,
+    )]
+    pub contract: Box<Account<'info, Contract>>,
+
+    #[account(
+        mut,
+        seeds = [b"agent-identity" as &[u8], contract.provider.as_ref()],
+        bump = provider_identity.bump,
+    )]
+    pub provider_identity: Box<Account<'info, AgentIdentity>>,
+
+    /// For SWORN: requester's ATA. For SOL: requester's wallet.
+    /// CHECK: For SOL, validated key == contract.requester. For SWORN, token CPI validates.
+    #[account(mut)]
+    pub requester_token_account: UncheckedAccount<'info>,
+
+    /// Escrow vault PDA for SWORN. Unused for SOL (lamports live in contract PDA).
+    /// CHECK: Validated manually via find_program_address in handler.
+    #[account(mut)]
+    pub escrow_vault: UncheckedAccount<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"insurance-pool"],
+        bump = insurance_pool.bump,
+    )]
+    pub insurance_pool: Box<Account<'info, InsurancePool>>,
+
+    /// For SWORN: insurance vault ATA. For SOL: not used (lamports go to requester).
+    /// CHECK: Validated in handler based on currency.
+    #[account(mut)]
+    pub insurance_vault: UncheckedAccount<'info>,
+
+    /// SWORN mint for burn CPI. Unused for SOL.
+    /// CHECK: Validated key == protocol_config.sworn_mint in handler.
+    #[account(mut)]
+    pub sworn_mint: UncheckedAccount<'info>,
+
+    #[account(
+        seeds = [b"protocol-config"],
+        bump = protocol_config.bump,
+    )]
+    pub protocol_config: Box<Account<'info, ProtocolConfig>>,
+
+    pub token_program: Program<'info, Token>,
+}
+
 #[derive(Accounts)]
 pub struct DeliverContract<'info> {
     #[account(mut)]

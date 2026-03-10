@@ -62,4 +62,6 @@ pub enum TrustError {
     InvalidDestination,
     #[msg("Account size is not the expected old format size")]
     InvalidAccountSize,
+    #[msg("Contract delivery timeout (72h) has not been reached yet")]
+    TimeoutNotReached,
 }
