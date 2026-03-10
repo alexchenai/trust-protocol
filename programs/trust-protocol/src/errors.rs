@@ -64,4 +64,6 @@ pub enum TrustError {
     InvalidAccountSize,
     #[msg("Contract delivery timeout (72h) has not been reached yet")]
     TimeoutNotReached,
+    #[msg("Jury is still voting: quorum not reached and deadline has not passed")]
+    JuryStillVoting,
 }

@@ -38,9 +38,11 @@ pub fn handler_initiate(ctx: Context<InitiateDispute>, evidence_hash: [u8; 32]) 
     dispute.corrections_count = 0;
 
     msg!(
-        "Dispute initiated on contract #{}. Level: DirectCorrection. Deadline: {}",
-        contract.id,
-        dispute.deadline
+        "Juror {} voted {}. Tally: prov={} req={} threshold={} status={:?}",
+        ctx.accounts.juror.key(),
+        if vote_for_provider { "provider" } else { "requester" },
+        dispute.votes_provider, dispute.votes_requester, majority_threshold,
+        dispute.status
     );
     Ok(())
 }
@@ -295,18 +297,24 @@ pub fn handler_vote(ctx: Context<JuryVote>, vote_for_provider: bool) -> Result<(
     } else {
         dispute.votes_requester = dispute.votes_requester.saturating_add(1);
     }
-    dispute.status = DisputeStatus::Voting;
+    // Whitepaper §5.3: Quorum = simple majority. Auto-close when reached.
+    // jury_size=0 edge case: threshold becomes 1 (safe default).
+    let majority_threshold = (dispute.jury_size as u16 / 2) + 1;
+    let max_votes = dispute.votes_provider.max(dispute.votes_requester);
+    if max_votes >= majority_threshold {
+        dispute.status = DisputeStatus::JuryDecided;
+    } else {
+        dispute.status = DisputeStatus::Voting;
+    }
 
     msg!(
-        "Juror {} voted for {}. Tally: provider={}, requester={}",
+        "Juror {} voted {}. provider={} req={} threshold={} quorum={}",
         ctx.accounts.juror.key(),
-        if vote_for_provider {
-            "provider"
-        } else {
-            "requester"
-        },
+        if vote_for_provider { "provider" } else { "requester" },
         dispute.votes_provider,
-        dispute.votes_requester
+        dispute.votes_requester,
+        majority_threshold,
+        matches!(dispute.status, DisputeStatus::JuryDecided)
     );
     Ok(())
 }
@@ -315,16 +323,27 @@ pub fn handler_vote(ctx: Context<JuryVote>, vote_for_provider: bool) -> Result<(
 /// Whitepaper: Confiscated stakes -> 15% burned, 60% insurance pool, 25% to winner.
 /// Fraud: complete capital confiscation + permanent TrustScore reset + ban.
 pub fn handler_resolve(ctx: Context<ResolveDispute>, provider_wins: bool) -> Result<()> {
-    // Determine final outcome (jury overrides manual input for jury levels)
+    // Whitepaper §5.3: Jury disputes are permissionless once quorum reached or deadline passed.
+    // L1/L2 disputes require admin authorization.
     let final_provider_wins = {
         let dispute = &ctx.accounts.dispute;
         if dispute.level == DisputeLevel::PublicJury || dispute.level == DisputeLevel::Appeal {
-            let total_votes = dispute
-                .votes_provider
-                .saturating_add(dispute.votes_requester);
+            let now_check = Clock::get()?.unix_timestamp;
+            let total_votes = dispute.votes_provider.saturating_add(dispute.votes_requester);
+            // Allow settlement if: jury quorum reached OR deadline passed with at least 1 vote
+            require!(
+                dispute.status == DisputeStatus::JuryDecided
+                    || (now_check > dispute.deadline && total_votes > 0),
+                TrustError::JuryStillVoting
+            );
             require!(total_votes > 0, TrustError::InvalidContractStatus);
             dispute.votes_provider > dispute.votes_requester
         } else {
+            // L1/L2: admin-only arbitration
+            require!(
+                ctx.accounts.resolver.key() == ctx.accounts.protocol_config.admin,
+                TrustError::UnauthorizedAdmin
+            );
             provider_wins
         }
     };

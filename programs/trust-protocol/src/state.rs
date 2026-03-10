@@ -214,6 +214,8 @@ pub enum DisputeStatus {
     ResolvedRequester,
     /// Escalated to next level
     Escalated,
+    /// Jury quorum reached — pending permissionless settlement (whitepaper §5.3)
+    JuryDecided,
 }
 
 /// Insurance Pool (Whitepaper Section 6)
