@@ -890,3 +890,72 @@ func NewFileInsuranceClaimInstruction(
 	}
 }
 
+
+// NewApproveInsuranceClaimInstruction builds the "approve_insurance_claim" instruction.
+// Admin-only in Phase 0-2. Pays out claim amount to claimant, returns collateral.
+// Whitepaper Section 6: Insurance Pool retroactive claims.
+// Accounts: admin (Signer), insuranceClaim (Write), insurancePool (Write),
+//           insuranceVault (Write), claimantTokenAccount (Write),
+//           poolAuthority (read PDA), providerIdentity (Write, +fraud_flag),
+//           protocolConfig (read), tokenProgram.
+func NewApproveInsuranceClaimInstruction(
+	programID solana.PublicKey,
+	admin solana.PublicKey,
+	insuranceClaimPDA solana.PublicKey,
+	insurancePoolPDA solana.PublicKey,
+	insuranceVault solana.PublicKey,
+	claimantTokenAccount solana.PublicKey,
+	poolAuthorityPDA solana.PublicKey,
+	providerIdentityPDA solana.PublicKey,
+	configPDA solana.PublicKey,
+) solana.Instruction {
+	disc := AnchorDiscriminator("approve_insurance_claim")
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(admin).SIGNER(),
+			solana.Meta(insuranceClaimPDA).WRITE(),
+			solana.Meta(insurancePoolPDA).WRITE(),
+			solana.Meta(insuranceVault).WRITE(),
+			solana.Meta(claimantTokenAccount).WRITE(),
+			solana.Meta(poolAuthorityPDA),
+			solana.Meta(providerIdentityPDA).WRITE(),
+			solana.Meta(configPDA),
+			solana.Meta(TokenProgramID),
+		},
+		DataBytes: disc[:],
+	}
+}
+
+// NewDenyInsuranceClaimInstruction builds the "deny_insurance_claim" instruction.
+// Admin-only in Phase 0-2. Forfeits collateral to insurance pool (anti-spam penalty).
+// Whitepaper Section 6: Insurance Pool retroactive claims.
+// Accounts: same as ApproveInsuranceClaim (shared Anchor Accounts struct).
+func NewDenyInsuranceClaimInstruction(
+	programID solana.PublicKey,
+	admin solana.PublicKey,
+	insuranceClaimPDA solana.PublicKey,
+	insurancePoolPDA solana.PublicKey,
+	insuranceVault solana.PublicKey,
+	claimantTokenAccount solana.PublicKey,
+	poolAuthorityPDA solana.PublicKey,
+	providerIdentityPDA solana.PublicKey,
+	configPDA solana.PublicKey,
+) solana.Instruction {
+	disc := AnchorDiscriminator("deny_insurance_claim")
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(admin).SIGNER(),
+			solana.Meta(insuranceClaimPDA).WRITE(),
+			solana.Meta(insurancePoolPDA).WRITE(),
+			solana.Meta(insuranceVault).WRITE(),
+			solana.Meta(claimantTokenAccount).WRITE(),
+			solana.Meta(poolAuthorityPDA),
+			solana.Meta(providerIdentityPDA).WRITE(),
+			solana.Meta(configPDA),
+			solana.Meta(TokenProgramID),
+		},
+		DataBytes: disc[:],
+	}
+}
