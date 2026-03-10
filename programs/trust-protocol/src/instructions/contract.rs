@@ -55,7 +55,7 @@ pub fn handler_create(ctx: Context<CreateContract>, value: u64) -> Result<()> {
     // max_contracts = floor(TrustScore / 10) + 1
     let max_contracts = (provider_identity.trust_score as u64 / 10) + 1;
     require!(
-        provider_identity.active_contracts as u64 < max_contracts,
+        (provider_identity.active_contracts as u64) < max_contracts,
         TrustError::ExposureLimitExceeded
     );
 

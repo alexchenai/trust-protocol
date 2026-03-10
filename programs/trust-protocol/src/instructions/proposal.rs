@@ -170,7 +170,7 @@ pub fn handler_accept_proposal(ctx: Context<AcceptProposal>) -> Result<()> {
     // NOTE: AcceptProposal struct must include provider_identity (added below)
     let max_contracts = (ctx.accounts.provider_identity.trust_score as u64 / 10) + 1;
     require!(
-        ctx.accounts.provider_identity.active_contracts as u64 < max_contracts,
+        (ctx.accounts.provider_identity.active_contracts as u64) < max_contracts,
         TrustError::ExposureLimitExceeded
     );
     ctx.accounts.provider_identity.active_contracts =
@@ -193,7 +193,7 @@ pub fn handler_cancel_proposal(ctx: Context<CancelProposal>) -> Result<()> {
     // Extract values before transfers to avoid borrow conflicts
     let contract_status = ctx.accounts.contract.status;
     let contract_requester = ctx.accounts.contract.requester;
-    let contract_expires = ctx.accounts.contract.proposal_expires_at;
+    let _contract_expires = ctx.accounts.contract.proposal_expires_at;
     let refund_value = ctx.accounts.contract.value;
     let is_sol = ctx.accounts.contract.currency == Currency::Sol;
     let contract_id = ctx.accounts.contract.id;
