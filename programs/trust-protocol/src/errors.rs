@@ -4,7 +4,7 @@ use anchor_lang::prelude::*;
 pub enum TrustError {
     #[msg("Identity bond must be between 2 and 5 SWORN tokens")]
     InvalidBondAmount,
-    #[msg("Agent identity has not matured (30-day waiting period)")]
+    #[msg("Agent identity has not matured (14-day + 5-task requirement)")]
     IdentityNotMatured,
     #[msg("Agent is permanently banned due to fraud")]
     AgentBanned,

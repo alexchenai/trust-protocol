@@ -39,6 +39,19 @@ pub mod trust_protocol {
         identity::handler_sponsor(ctx, bonus_points)
     }
 
+    /// Permissionless maturation check: marks identity as matured if 14 days + 5 tasks.
+    /// Whitepaper Section 10.2: agents self-mature without oracle dependency.
+    pub fn check_maturation(ctx: Context<CheckMaturation>) -> Result<()> {
+        identity::handler_check_maturation(ctx)
+    }
+
+    /// Compute and store TrustScore on-chain using the whitepaper formula.
+    /// Permissionless: any caller triggers recalculation.
+    /// sol_to_sworn_rate: SOL lamport to SWORN lamport exchange rate for volume normalization.
+    pub fn calculate_trust_score(ctx: Context<CalculateTrustScore>, sol_to_sworn_rate: u64) -> Result<()> {
+        identity::handler_calculate_trust_score(ctx, sol_to_sworn_rate)
+    }
+
     // === Contract Lifecycle (Whitepaper Section 3: Dynamic Staking) ===
 
     /// Create contract. Provider stakes based on TrustScore.

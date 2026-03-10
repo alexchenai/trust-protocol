@@ -1,7 +1,7 @@
 use crate::errors::TrustError;
 use crate::state::*;
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
+use anchor_spl::token::{self, Burn, Mint, Token, TokenAccount, Transfer};
 
 /// Calculate stake factor based on TrustScore using CONVEX curve.
 /// Whitepaper: factor_stake(ts) = max(0.05, 1.0 - 0.95 * (ts/100)^1.5)
@@ -54,17 +54,22 @@ pub fn handler_create(ctx: Context<CreateContract>, value: u64) -> Result<()> {
     // Exposure limit check (Whitepaper Section 7.3)
     // max_contracts = floor(TrustScore / 10) + 1
     let max_contracts = (provider_identity.trust_score as u64 / 10) + 1;
-    // NOTE: We cannot count active contracts on-chain without iteration.
-    // For now we log the limit. Full enforcement requires an active_contracts counter
-    // on AgentIdentity (future upgrade).
-    msg!("Exposure limit: max {} simultaneous contracts for TS {}", max_contracts, provider_identity.trust_score);
+    require!(
+        provider_identity.active_contracts as u64 < max_contracts,
+        TrustError::ExposureLimitExceeded
+    );
+
+    // Capture trust_score before mutable borrow
+    let ts = provider_identity.trust_score;
+    let min_bps = config.min_stake_factor_bps;
+    let max_bps = config.max_stake_factor_bps;
+
+    // Increment active contract counter
+    ctx.accounts.provider_identity.active_contracts =
+        ctx.accounts.provider_identity.active_contracts.saturating_add(1);
 
     // Calculate required stake
-    let stake_factor = calculate_stake_factor(
-        provider_identity.trust_score,
-        config.min_stake_factor_bps,
-        config.max_stake_factor_bps,
-    );
+    let stake_factor = calculate_stake_factor(ts, min_bps, max_bps);
     let stake_required = (value as u128)
         .checked_mul(stake_factor as u128)
         .ok_or(TrustError::MathOverflow)?
@@ -153,6 +158,10 @@ pub fn handler_deliver(
     contract.poe_arweave_tx = arweave_tx.clone();
     contract.status = ContractStatus::Delivered;
 
+    // Track total deliveries on provider identity (Whitepaper: quality_factor denominator)
+    ctx.accounts.provider_identity.total_deliveries =
+        ctx.accounts.provider_identity.total_deliveries.saturating_add(1);
+
     // Create PoE record
     let poe = &mut ctx.accounts.proof_of_execution;
     poe.contract = contract.key();
@@ -164,14 +173,13 @@ pub fn handler_deliver(
     poe.arweave_tx = arweave_tx;
     poe.bump = ctx.bumps.proof_of_execution;
 
-    msg!("Contract #{} delivered. PoE submitted.", contract.id);
+    msg!("Contract #{} delivered. PoE submitted. Total deliveries: {}", contract.id, ctx.accounts.provider_identity.total_deliveries);
     Ok(())
 }
 
 /// Requester accepts deliverable. Releases payment + returns provider stake.
 /// Deducts 1% protocol fee (70% treasury / 20% insurance / 10% burn).
 /// Whitepaper Section 11.8: fee deducted at accept_contract.
-/// NOTE: Uses only 2 CPI transfers to stay within BPF stack frame limits.
 pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
     let contract = &mut ctx.accounts.contract;
     require!(
@@ -183,8 +191,9 @@ pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
         TrustError::UnauthorizedRequester
     );
 
+    let now = Clock::get()?.unix_timestamp;
     contract.status = ContractStatus::Completed;
-    contract.resolved_at = Clock::get()?.unix_timestamp;
+    contract.resolved_at = now;
 
     // Mark PoE as validated
     let poe = &mut ctx.accounts.proof_of_execution;
@@ -193,22 +202,29 @@ pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
     // Update provider stats
     let provider_identity = &mut ctx.accounts.provider_identity;
     provider_identity.tasks_completed = provider_identity.tasks_completed.saturating_add(1);
-    provider_identity.volume_processed = provider_identity
-        .volume_processed
-        .saturating_add(contract.value);
+    provider_identity.last_task_completed_at = now;
+    provider_identity.active_contracts = provider_identity.active_contracts.saturating_sub(1);
+    // Track volume separately by currency (Whitepaper: volume_factor uses SWORN-equivalent)
+    if contract.currency == Currency::Sol {
+        provider_identity.volume_sol = provider_identity.volume_sol.saturating_add(contract.value);
+    } else {
+        provider_identity.volume_processed =
+            provider_identity.volume_processed.saturating_add(contract.value);
+    }
 
     // Extract values before releasing mutable borrow for SOL lamport transfers
     let contract_value = contract.value;
     let contract_provider_stake = contract.provider_stake;
     let contract_currency = contract.currency;
     let contract_id_val = contract.id;
+    let tasks_completed = provider_identity.tasks_completed;
 
     // Calculate protocol fee: 1% of contract value (Whitepaper Section 11.8)
-    // Split: 70% treasury, 20% insurance pool, 10% burn (burn goes to insurance for now)
+    // Split: 70% treasury, 20% insurance pool, 10% burn
     let protocol_fee = contract_value / 100; // 1%
     let fee_treasury = protocol_fee * 70 / 100;
-    // Insurance + burn combined into one transfer (burn to insurance until proper burn setup)
-    let fee_insurance_and_burn = protocol_fee.saturating_sub(fee_treasury); // 30%
+    let fee_insurance = protocol_fee * 20 / 100;
+    let fee_burn = protocol_fee.saturating_sub(fee_treasury).saturating_sub(fee_insurance); // 10%
 
     // Net payment to provider = contract value - protocol fee + stake return
     let net_payment = contract_value.saturating_sub(protocol_fee);
@@ -235,18 +251,17 @@ pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
         **contract_info.try_borrow_mut_lamports()? -= provider_release;
         **provider_info.try_borrow_mut_lamports()? += provider_release;
 
-        // Transfer ALL protocol fees to treasury (admin wallet) for SOL contracts.
-        // Insurance PDA may have 0 SOL and adding small fees would leave it below
-        // rent-exempt minimum, causing InsufficientFundsForRent.
+        // Transfer ALL protocol fees to treasury for SOL contracts.
+        // Insurance PDA may have 0 SOL — adding small amounts causes InsufficientFundsForRent.
         // Admin redistributes insurance portion off-chain.
-        let total_fees = fee_treasury.checked_add(fee_insurance_and_burn).ok_or(TrustError::MathOverflow)?;
+        let total_fees = fee_treasury.saturating_add(fee_insurance).saturating_add(fee_burn);
         if total_fees > 0 {
             **contract_info.try_borrow_mut_lamports()? -= total_fees;
             **treasury_info.try_borrow_mut_lamports()? += total_fees;
         }
     } else {
         // SWORN-denominated contract: SPL token transfers via escrow PDA
-        // Manually derive escrow PDA bump (removed seeds from account validation to avoid stack overflow)
+        // Manually derive escrow PDA bump to avoid BPF stack overflow
         let contract_id_bytes = contract_id_val.to_le_bytes();
         let (expected_escrow, escrow_bump) = Pubkey::find_program_address(
             &[b"escrow", &contract_id_bytes],
@@ -273,7 +288,7 @@ pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
             provider_release,
         )?;
 
-        // CPI 2: Transfer treasury fee to admin
+        // CPI 2: Transfer 70% fee to treasury
         if fee_treasury > 0 {
             token::transfer(
                 CpiContext::new_with_signer(
@@ -289,9 +304,8 @@ pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
             )?;
         }
 
-        // CPI 3: Transfer insurance+burn portion to insurance vault
-        // (Burn goes to insurance pool until proper SPL burn is set up)
-        if fee_insurance_and_burn > 0 {
+        // CPI 3: Transfer 20% fee to insurance vault
+        if fee_insurance > 0 {
             token::transfer(
                 CpiContext::new_with_signer(
                     ctx.accounts.token_program.to_account_info(),
@@ -302,20 +316,41 @@ pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
                     },
                     signer_seeds,
                 ),
-                fee_insurance_and_burn,
+                fee_insurance,
+            )?;
+        }
+
+        // CPI 4: Burn 10% of fee (deflationary — Whitepaper Section 11.8)
+        if fee_burn > 0 {
+            require!(
+                ctx.accounts.sworn_mint.key() == ctx.accounts.protocol_config.sworn_mint,
+                TrustError::InvalidDestination
+            );
+            token::burn(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    Burn {
+                        mint: ctx.accounts.sworn_mint.to_account_info(),
+                        from: ctx.accounts.escrow_vault.to_account_info(),
+                        authority: ctx.accounts.escrow_vault.to_account_info(),
+                    },
+                    signer_seeds,
+                ),
+                fee_burn,
             )?;
         }
     }
 
     msg!(
-        "Contract #{} completed. Currency: {:?}. Provider: {} net. Fee: {} (treasury: {}, pool: {}). Tasks: {}",
+        "Contract #{} completed. Currency: {:?}. Provider: {} net. Fee: {} (treasury: {}, insurance: {}, burn: {}). Tasks: {}",
         contract_id_val,
         contract_currency,
         provider_release,
         protocol_fee,
         fee_treasury,
-        fee_insurance_and_burn,
-        provider_identity.tasks_completed
+        fee_insurance,
+        fee_burn,
+        tasks_completed
     );
     Ok(())
 }
@@ -329,6 +364,7 @@ pub struct CreateContract<'info> {
     pub provider: UncheckedAccount<'info>,
 
     #[account(
+        mut,
         seeds = [b"agent-identity" as &[u8], provider.key().as_ref()],
         bump = provider_identity.bump,
     )]
@@ -398,6 +434,13 @@ pub struct DeliverContract<'info> {
     pub contract: Account<'info, Contract>,
 
     #[account(
+        mut,
+        seeds = [b"agent-identity" as &[u8], provider.key().as_ref()],
+        bump = provider_identity.bump,
+    )]
+    pub provider_identity: Account<'info, AgentIdentity>,
+
+    #[account(
         init,
         payer = provider,
         space = 8 + ProofOfExecution::INIT_SPACE,
@@ -453,6 +496,11 @@ pub struct AcceptContract<'info> {
     /// CHECK: Validated manually in handler via find_program_address for SWORN path.
     #[account(mut)]
     pub escrow_vault: UncheckedAccount<'info>,
+
+    /// SWORN mint for the burn CPI (10% of fee). Unused for SOL contracts.
+    /// CHECK: Validated key == protocol_config.sworn_mint in handler.
+    #[account(mut)]
+    pub sworn_mint: UncheckedAccount<'info>,
 
     #[account(
         seeds = [b"protocol-config"],

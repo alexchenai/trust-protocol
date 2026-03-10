@@ -100,10 +100,18 @@ pub fn handler_escalate(ctx: Context<EscalateDispute>) -> Result<()> {
     dispute.status = DisputeStatus::Open;
     dispute.deadline = now + deadline_days * 86_400;
 
-    // Set jury size for Public Jury and Appeal
+    // Set jury size based on contract value (Whitepaper Section 5.3)
+    // PublicJury: 3 (<100 SWORN units), 5 (100-1000), 7 (>1000)
+    // Appeal: always 9 (larger independent jury)
     match dispute.level {
-        DisputeLevel::PublicJury => dispute.jury_size = 5, // 5 jurors
-        DisputeLevel::Appeal => dispute.jury_size = 11,    // 11 jurors (double-or-nothing)
+        DisputeLevel::PublicJury => {
+            let contract_value = ctx.accounts.contract.value;
+            // 1 SWORN unit = 1_000_000 lamports (6 decimals)
+            dispute.jury_size = if contract_value < 100_000_000 { 3 }
+                else if contract_value < 1_000_000_000 { 5 }
+                else { 7 };
+        }
+        DisputeLevel::Appeal => dispute.jury_size = 9, // independent larger jury
         _ => {}
     }
 
@@ -204,6 +212,10 @@ pub fn handler_resolve(ctx: Context<ResolveDispute>, provider_wins: bool) -> Res
     let escrow_seeds: &[&[u8]] = &[b"escrow", &contract_id_bytes, &[escrow_bump]];
     let signer_seeds = &[escrow_seeds];
 
+    // Dispute resolution always terminates the contract — decrement provider's active counter
+    ctx.accounts.provider_identity.active_contracts =
+        ctx.accounts.provider_identity.active_contracts.saturating_sub(1);
+
     let is_sol = ctx.accounts.contract.currency == Currency::Sol;
 
     if is_sol {
@@ -233,6 +245,7 @@ pub fn handler_resolve(ctx: Context<ResolveDispute>, provider_wins: bool) -> Res
 
             ctx.accounts.requester_identity.disputes_lost = ctx.accounts.requester_identity.disputes_lost.saturating_add(1);
             ctx.accounts.provider_identity.disputes_won = ctx.accounts.provider_identity.disputes_won.saturating_add(1);
+            ctx.accounts.provider_identity.last_task_completed_at = now;
             msg!("Dispute resolved (SOL): PROVIDER wins. {} lamports released.", total);
         } else {
             ctx.accounts.dispute.status = DisputeStatus::ResolvedRequester;
@@ -291,6 +304,7 @@ pub fn handler_resolve(ctx: Context<ResolveDispute>, provider_wins: bool) -> Res
 
             ctx.accounts.requester_identity.disputes_lost = ctx.accounts.requester_identity.disputes_lost.saturating_add(1);
             ctx.accounts.provider_identity.disputes_won = ctx.accounts.provider_identity.disputes_won.saturating_add(1);
+            ctx.accounts.provider_identity.last_task_completed_at = now;
             msg!("Dispute resolved (SWORN): PROVIDER wins. {} released.", total);
         } else {
             ctx.accounts.dispute.status = DisputeStatus::ResolvedRequester;
@@ -400,6 +414,7 @@ pub struct RespondDispute<'info> {
 
 #[derive(Accounts)]
 pub struct EscalateDispute<'info> {
+    /// Either the requester or provider may escalate (Whitepaper Section 5.2).
     pub initiator: Signer<'info>,
 
     #[account(mut)]
@@ -409,7 +424,11 @@ pub struct EscalateDispute<'info> {
         mut,
         seeds = [b"dispute" as &[u8], contract.key().as_ref()],
         bump = dispute.bump,
-        constraint = dispute.initiator == initiator.key(),
+        // Either contract party can escalate
+        constraint = (
+            initiator.key() == contract.requester ||
+            initiator.key() == contract.provider
+        ) @ TrustError::UnauthorizedRequester,
     )]
     pub dispute: Account<'info, Dispute>,
 }
@@ -552,6 +571,10 @@ pub fn handler_redeliver(
     poe.submitted_at = now;
     poe.validated = false;
 
+    // Track re-delivery on provider identity (Whitepaper: total_deliveries denominator)
+    ctx.accounts.provider_identity.total_deliveries =
+        ctx.accounts.provider_identity.total_deliveries.saturating_add(1);
+
     // Increment corrections count
     dispute.corrections_count = dispute.corrections_count.saturating_add(1);
 
@@ -622,21 +645,33 @@ pub fn handler_accept_correction(ctx: Context<AcceptCorrection>) -> Result<()> {
     // Update provider stats
     let provider_identity = &mut ctx.accounts.provider_identity;
     provider_identity.tasks_completed = provider_identity.tasks_completed.saturating_add(1);
-    provider_identity.volume_processed = provider_identity
-        .volume_processed
-        .saturating_add(contract.value);
+    provider_identity.last_task_completed_at = now;
+    provider_identity.active_contracts = provider_identity.active_contracts.saturating_sub(1);
+    // Track corrections_received (requester accepted = provider needed correction)
+    provider_identity.corrections_received =
+        provider_identity.corrections_received.saturating_add(dispute.corrections_count as u32);
+    // Track volume by currency
+    if contract.currency == Currency::Sol {
+        provider_identity.volume_sol = provider_identity.volume_sol.saturating_add(contract.value);
+    } else {
+        provider_identity.volume_processed =
+            provider_identity.volume_processed.saturating_add(contract.value);
+    }
 
     // Extract values before releasing mutable borrow for payment logic
     let contract_value = contract.value;
     let contract_provider_stake = contract.provider_stake;
     let contract_currency = contract.currency;
     let contract_id_val = contract.id;
+    let corrections_count = dispute.corrections_count;
+    let tasks_completed = provider_identity.tasks_completed;
 
     // Calculate protocol fee: 1% of contract value (Whitepaper Section 11.8)
-    // Split: 70% treasury, 20% insurance pool, 10% burn (burn goes to insurance for now)
+    // Split: 70% treasury, 20% insurance pool, 10% burn
     let protocol_fee = contract_value / 100; // 1%
     let fee_treasury = protocol_fee * 70 / 100;
-    let fee_insurance_and_burn = protocol_fee.saturating_sub(fee_treasury); // 30%
+    let fee_insurance = protocol_fee * 20 / 100;
+    let fee_burn = protocol_fee.saturating_sub(fee_treasury).saturating_sub(fee_insurance); // 10%
 
     // Net payment to provider = contract value - protocol fee + stake return
     let net_payment = contract_value.saturating_sub(protocol_fee);
@@ -663,9 +698,9 @@ pub fn handler_accept_correction(ctx: Context<AcceptCorrection>) -> Result<()> {
         **contract_info.try_borrow_mut_lamports()? -= provider_release;
         **provider_info.try_borrow_mut_lamports()? += provider_release;
 
-        // Transfer ALL protocol fees to treasury (admin wallet) for SOL contracts.
+        // Transfer ALL protocol fees to treasury for SOL contracts.
         // Insurance PDA may have 0 SOL — sending small amounts causes InsufficientFundsForRent.
-        let total_fees = fee_treasury.checked_add(fee_insurance_and_burn).ok_or(TrustError::MathOverflow)?;
+        let total_fees = fee_treasury.saturating_add(fee_insurance).saturating_add(fee_burn);
         if total_fees > 0 {
             **contract_info.try_borrow_mut_lamports()? -= total_fees;
             **treasury_info.try_borrow_mut_lamports()? += total_fees;
@@ -699,7 +734,7 @@ pub fn handler_accept_correction(ctx: Context<AcceptCorrection>) -> Result<()> {
             provider_release,
         )?;
 
-        // CPI 2: Transfer treasury fee to admin
+        // CPI 2: Transfer 70% fee to treasury
         if fee_treasury > 0 {
             token::transfer(
                 CpiContext::new_with_signer(
@@ -715,8 +750,8 @@ pub fn handler_accept_correction(ctx: Context<AcceptCorrection>) -> Result<()> {
             )?;
         }
 
-        // CPI 3: Transfer insurance+burn portion to insurance vault
-        if fee_insurance_and_burn > 0 {
+        // CPI 3: Transfer 20% fee to insurance vault
+        if fee_insurance > 0 {
             token::transfer(
                 CpiContext::new_with_signer(
                     ctx.accounts.token_program.to_account_info(),
@@ -727,20 +762,42 @@ pub fn handler_accept_correction(ctx: Context<AcceptCorrection>) -> Result<()> {
                     },
                     signer_seeds,
                 ),
-                fee_insurance_and_burn,
+                fee_insurance,
+            )?;
+        }
+
+        // CPI 4: Burn 10% of fee (Whitepaper Section 11.8: deflationary)
+        if fee_burn > 0 {
+            require!(
+                ctx.accounts.sworn_mint.key() == ctx.accounts.protocol_config.sworn_mint,
+                TrustError::InvalidDestination
+            );
+            token::burn(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    Burn {
+                        mint: ctx.accounts.sworn_mint.to_account_info(),
+                        from: ctx.accounts.escrow_vault.to_account_info(),
+                        authority: ctx.accounts.escrow_vault.to_account_info(),
+                    },
+                    signer_seeds,
+                ),
+                fee_burn,
             )?;
         }
     }
 
     msg!(
-        "Contract #{} completed via dispute correction. Currency: {:?}. Provider: {} net. Fee: {} (treasury: {}, pool: {}). Corrections: {}",
+        "Contract #{} completed via dispute correction. Currency: {:?}. Provider: {} net. Fee: {} (treasury: {}, insurance: {}, burn: {}). Corrections: {}. Tasks: {}",
         contract_id_val,
         contract_currency,
         provider_release,
         protocol_fee,
         fee_treasury,
-        fee_insurance_and_burn,
-        dispute.corrections_count
+        fee_insurance,
+        fee_burn,
+        corrections_count,
+        tasks_completed
     );
     Ok(())
 }
@@ -756,6 +813,13 @@ pub struct RedeliverInDispute<'info> {
         constraint = contract.status == ContractStatus::Disputed @ TrustError::InvalidContractStatus,
     )]
     pub contract: Account<'info, Contract>,
+
+    #[account(
+        mut,
+        seeds = [b"agent-identity" as &[u8], provider.key().as_ref()],
+        bump = provider_identity.bump,
+    )]
+    pub provider_identity: Account<'info, AgentIdentity>,
 
     #[account(
         mut,
@@ -822,6 +886,11 @@ pub struct AcceptCorrection<'info> {
     /// CHECK: Validated manually in handler for SWORN path.
     #[account(mut)]
     pub escrow_vault: UncheckedAccount<'info>,
+
+    /// SWORN mint for the burn CPI (10% of fee). Unused for SOL contracts.
+    /// CHECK: Validated key == protocol_config.sworn_mint in handler.
+    #[account(mut)]
+    pub sworn_mint: UncheckedAccount<'info>,
 
     #[account(
         seeds = [b"protocol-config"],

@@ -10,7 +10,7 @@ pub fn handler(ctx: Context<Initialize>, params: InitializeParams) -> Result<()>
     config.sworn_mint = ctx.accounts.sworn_mint.key();
     config.min_identity_bond = params.min_identity_bond;
     config.max_identity_bond = params.max_identity_bond;
-    config.maturation_period = 2_592_000; // 30 days
+    config.maturation_period = 1_209_600; // 14 days (Whitepaper Section 10.2)
     config.min_stake_factor_bps = 500; // 5%
     config.max_stake_factor_bps = 10_000; // 100%
     config.burn_rate_bps = 1_500; // 15%

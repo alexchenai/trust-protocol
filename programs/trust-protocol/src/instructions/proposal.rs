@@ -166,9 +166,24 @@ pub fn handler_accept_proposal(ctx: Context<AcceptProposal>) -> Result<()> {
     contract.provider_stake = stake_required;
     contract.status = ContractStatus::Active;
 
+    // Enforce exposure limit and increment active_contracts counter (Whitepaper Section 7.3)
+    // NOTE: AcceptProposal struct must include provider_identity (added below)
+    let max_contracts = (ctx.accounts.provider_identity.trust_score as u64 / 10) + 1;
+    require!(
+        ctx.accounts.provider_identity.active_contracts as u64 < max_contracts,
+        TrustError::ExposureLimitExceeded
+    );
+    ctx.accounts.provider_identity.active_contracts =
+        ctx.accounts.provider_identity.active_contracts.saturating_add(1);
+
+    // Re-validate provider hasn't been banned since proposal was created
+    require!(!ctx.accounts.provider_identity.banned, TrustError::AgentBanned);
+
     msg!(
-        "Contract #{} accepted by provider {}. Stake deposited: {} (currency: {:?})",
-        contract_id, contract_provider, stake_required, if is_sol { Currency::Sol } else { Currency::Sworn }
+        "Contract #{} accepted by provider {}. Stake deposited: {} (currency: {:?}). Active contracts: {}",
+        contract_id, contract_provider, stake_required,
+        if is_sol { Currency::Sol } else { Currency::Sworn },
+        ctx.accounts.provider_identity.active_contracts
     );
     Ok(())
 }
@@ -305,6 +320,14 @@ pub struct AcceptProposal<'info> {
         constraint = contract.status == ContractStatus::Proposed @ TrustError::InvalidContractStatus,
     )]
     pub contract: Account<'info, Contract>,
+
+    /// Provider's identity — validates ban status, enforces exposure limit, tracks active_contracts
+    #[account(
+        mut,
+        seeds = [b"agent-identity" as &[u8], provider.key().as_ref()],
+        bump = provider_identity.bump,
+    )]
+    pub provider_identity: Account<'info, AgentIdentity>,
 
     /// Provider's SWORN token account (only needed for SWORN-denominated contracts)
     #[account(

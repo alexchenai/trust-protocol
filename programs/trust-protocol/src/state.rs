@@ -12,14 +12,16 @@ pub struct AgentIdentity {
     pub identity_bond: u64,
     /// Unix timestamp of registration
     pub registered_at: i64,
-    /// Whether this identity has matured (30 days after registration)
+    /// Whether this identity has matured (14 days + 5 tasks — see check_maturation)
     pub matured: bool,
-    /// Current TrustScore (0-100, updated by oracle)
+    /// Current TrustScore (0-100, computed on-chain via calculate_trust_score instruction)
     pub trust_score: u16,
     /// Total tasks completed (logarithmic weight in TrustScore)
     pub tasks_completed: u64,
-    /// Total transaction volume in SWORN (lamports)
+    /// Total transaction volume in SWORN lamports
     pub volume_processed: u64,
+    /// Total transaction volume in SOL lamports (tracked separately for TrustScore)
+    pub volume_sol: u64,
     /// Disputes lost count
     pub disputes_lost: u32,
     /// Disputes won count
@@ -28,6 +30,14 @@ pub struct AgentIdentity {
     pub tasks_abandoned: u32,
     /// Fraud flags count
     pub fraud_flags: u32,
+    /// Total deliveries submitted (includes re-deliveries during disputes)
+    pub total_deliveries: u32,
+    /// Corrections received from requester feedback (quality proxy)
+    pub corrections_received: u32,
+    /// Number of currently active contracts (for exposure limit enforcement)
+    pub active_contracts: u32,
+    /// Timestamp of last completed task (for TrustScore decay calculation)
+    pub last_task_completed_at: i64,
     /// Sponsor bonus points from established agents
     pub sponsor_bonus: u16,
     /// Whether identity is permanently banned (fraud)
