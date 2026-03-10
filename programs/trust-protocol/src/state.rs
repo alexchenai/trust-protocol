@@ -181,6 +181,11 @@ pub struct Dispute {
     pub bump: u8,
     /// Number of corrections attempted (max 3 before auto-escalate to L2)
     pub corrections_count: u8,
+    /// Appeal stake deposited by escalating party (Level 4 only).
+    /// On escalation to Appeal: escalating party deposits 50% of contract value.
+    /// Losing party forfeits their appeal_stake (60% insurance, 25% winner, 15% burn).
+    /// Whitepaper Section 5.4: double-or-nothing with larger jury.
+    pub appeal_stake: u64,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace)]

@@ -114,9 +114,17 @@ pub mod trust_protocol {
         dispute::handler_respond(ctx, response_hash)
     }
 
-    /// Escalate dispute to next level.
+    /// Escalate dispute to next level (Level 1→2→3 only, no stake required).
     pub fn escalate_dispute(ctx: Context<EscalateDispute>) -> Result<()> {
         dispute::handler_escalate(ctx)
+    }
+
+    /// Escalate a Level 3 (PublicJury) dispute to Level 4 (Appeal).
+    /// Whitepaper Section 5.4: escalating party deposits 50% of contract value (double-or-nothing).
+    /// On win: deposit returned. On loss: deposit confiscated (60% insurance, 25% winner, 15% burn).
+    /// Records depositor in dispute.initiator for correct refund/confiscation in resolve_dispute.
+    pub fn escalate_to_appeal(ctx: Context<EscalateToAppeal>) -> Result<()> {
+        dispute::handler_escalate_to_appeal(ctx)
     }
 
     /// Jury vote (Public Jury / Appeal only, TrustScore > 70 required).

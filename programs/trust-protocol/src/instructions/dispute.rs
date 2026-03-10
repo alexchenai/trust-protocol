@@ -131,6 +131,130 @@ pub fn handler_escalate(ctx: Context<EscalateDispute>) -> Result<()> {
     Ok(())
 }
 
+/// Escalate a Level 3 (PublicJury) dispute to Level 4 (Appeal) with the required stake deposit.
+/// Whitepaper Section 5.4: double-or-nothing — escalating party deposits 50% of contract value.
+/// If the appeal is won: deposit returned to depositor.
+/// If the appeal is lost: deposit confiscated (60% insurance, 25% winner, 15% burn).
+///
+/// Separate from `escalate_dispute` because it requires token accounts for the stake transfer.
+/// Records the depositor in `dispute.initiator` (overwrites original initiator at L4).
+pub fn handler_escalate_to_appeal(ctx: Context<EscalateToAppeal>) -> Result<()> {
+    let dispute = &ctx.accounts.dispute;
+    require!(
+        dispute.level == DisputeLevel::PublicJury,
+        TrustError::InvalidContractStatus
+    );
+    require!(
+        dispute.status == DisputeStatus::Open
+            || dispute.status == DisputeStatus::Voting
+            || dispute.status == DisputeStatus::Responded,
+        TrustError::InvalidContractStatus
+    );
+
+    let contract = &ctx.accounts.contract;
+    let escalator_key = ctx.accounts.escalator.key();
+    require!(
+        escalator_key == contract.requester || escalator_key == contract.provider,
+        TrustError::UnauthorizedRequester
+    );
+
+    // 50% of contract value is the appeal stake (Whitepaper Section 5.4)
+    let appeal_stake_amount = contract.value
+        .checked_div(2)
+        .ok_or(TrustError::MathOverflow)?;
+    require!(appeal_stake_amount > 0, TrustError::MathOverflow);
+
+    let is_sol = contract.currency == Currency::Sol;
+    let contract_id_bytes = contract.id.to_le_bytes();
+
+    if is_sol {
+        // SOL: add lamports from escalator to contract PDA (program-owned, holds SOL escrow)
+        let escalator_info = ctx.accounts.escalator.to_account_info();
+        let contract_info = ctx.accounts.contract.to_account_info();
+        let escalator_lamports = escalator_info.lamports();
+        require!(
+            escalator_lamports >= appeal_stake_amount,
+            TrustError::InsufficientStake
+        );
+        **escalator_info.try_borrow_mut_lamports()? -= appeal_stake_amount;
+        **contract_info.try_borrow_mut_lamports()? += appeal_stake_amount;
+    } else {
+        // SWORN: transfer from escalator's ATA to contract escrow vault
+        let (expected_escrow, _) = Pubkey::find_program_address(
+            &[b"escrow", &contract_id_bytes],
+            ctx.program_id,
+        );
+        require!(
+            ctx.accounts.escrow_vault.key() == expected_escrow,
+            TrustError::InvalidEscrowVault
+        );
+        token::transfer(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.escalator_token_account.to_account_info(),
+                    to: ctx.accounts.escrow_vault.to_account_info(),
+                    authority: ctx.accounts.escalator.to_account_info(),
+                },
+            ),
+            appeal_stake_amount,
+        )?;
+    }
+
+    // Record the appeal stake and transition to Level 4
+    let now = Clock::get()?.unix_timestamp;
+    let dispute = &mut ctx.accounts.dispute;
+    dispute.appeal_stake = appeal_stake_amount;
+    // Overwrite initiator with the L4 escalator to track who gets refunded on win
+    dispute.initiator = escalator_key;
+    dispute.level = DisputeLevel::Appeal;
+    dispute.status = DisputeStatus::Open;
+    dispute.jury_size = 9; // independent larger jury (Whitepaper Section 5.4)
+    dispute.deadline = now + 10 * 86_400; // 10-day appeal window
+    dispute.votes_provider = 0; // reset votes for new jury
+    dispute.votes_requester = 0;
+
+    let contract = &mut ctx.accounts.contract;
+    contract.dispute_level = 4;
+
+    msg!(
+        "Dispute escalated to Level 4 (Appeal). Depositor: {}. Appeal stake: {}. Deadline: {}",
+        escalator_key,
+        appeal_stake_amount,
+        dispute.deadline
+    );
+    Ok(())
+}
+
+#[derive(Accounts)]
+pub struct EscalateToAppeal<'info> {
+    #[account(mut)]
+    pub escalator: Signer<'info>,
+
+    #[account(mut)]
+    pub contract: Box<Account<'info, Contract>>,
+
+    #[account(
+        mut,
+        seeds = [b"dispute" as &[u8], contract.key().as_ref()],
+        bump = dispute.bump,
+    )]
+    pub dispute: Box<Account<'info, Dispute>>,
+
+    /// For SWORN: escalator's ATA. For SOL: pass any account (not used).
+    /// CHECK: For SWORN, validated via token CPI. For SOL, not used.
+    #[account(mut)]
+    pub escalator_token_account: UncheckedAccount<'info>,
+
+    /// For SWORN: contract escrow vault. For SOL: pass any account (not used).
+    /// CHECK: Validated manually via PDA derivation for SWORN path.
+    #[account(mut)]
+    pub escrow_vault: UncheckedAccount<'info>,
+
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+}
+
 /// Jury member casts vote (Public Jury / Appeal only).
 /// Whitepaper: Only agents with TrustScore > 70 can serve as jurors.
 /// Voting is weighted by reputation (validated via TrustScore check).
@@ -369,6 +493,128 @@ pub fn handler_resolve(ctx: Context<ResolveDispute>, provider_wins: bool) -> Res
             ctx.accounts.provider_identity.disputes_lost = ctx.accounts.provider_identity.disputes_lost.saturating_add(1);
             ctx.accounts.requester_identity.disputes_won = ctx.accounts.requester_identity.disputes_won.saturating_add(1);
             msg!("Dispute resolved (SWORN): REQUESTER wins. Confiscated: {}, Burned: {}, Insurance: {}, Winner: {}", confiscated, burn_amount, insurance_amount, winner_amount);
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Level 4 (Appeal) additional: distribute appeal_stake (Whitepaper Section 5.4)
+    // ---------------------------------------------------------------------------
+    // dispute.initiator was set to the appeal depositor by escalate_to_appeal.
+    // If depositor wins: return appeal_stake to them.
+    // If depositor loses: confiscate per 60/25/15 split.
+    let appeal_stake = ctx.accounts.dispute.appeal_stake;
+    if ctx.accounts.dispute.level == DisputeLevel::Appeal && appeal_stake > 0 {
+        let depositor = ctx.accounts.dispute.initiator;
+        let depositor_wins = if depositor == ctx.accounts.contract.provider {
+            final_provider_wins
+        } else {
+            !final_provider_wins // depositor is requester
+        };
+
+        let is_sol = ctx.accounts.contract.currency == Currency::Sol;
+
+        if depositor_wins {
+            // Return appeal_stake to depositor
+            if is_sol {
+                let contract_info = ctx.accounts.contract.to_account_info();
+                // Depositor's account: provider or requester based on depositor pubkey
+                let dest_info = if depositor == ctx.accounts.contract.provider {
+                    ctx.accounts.provider_token_account.to_account_info()
+                } else {
+                    ctx.accounts.requester_token_account.to_account_info()
+                };
+                **contract_info.try_borrow_mut_lamports()? -= appeal_stake;
+                **dest_info.try_borrow_mut_lamports()? += appeal_stake;
+            } else {
+                let dest_info = if depositor == ctx.accounts.contract.provider {
+                    ctx.accounts.provider_token_account.to_account_info()
+                } else {
+                    ctx.accounts.requester_token_account.to_account_info()
+                };
+                token::transfer(
+                    CpiContext::new_with_signer(
+                        ctx.accounts.token_program.to_account_info(),
+                        Transfer {
+                            from: ctx.accounts.escrow_vault.to_account_info(),
+                            to: dest_info,
+                            authority: ctx.accounts.escrow_vault.to_account_info(),
+                        },
+                        signer_seeds,
+                    ),
+                    appeal_stake,
+                )?;
+            }
+            msg!("Appeal Level 4: depositor {} WINS. Appeal stake {} returned.", depositor, appeal_stake);
+        } else {
+            // Confiscate appeal_stake: 60% insurance, 25% winner, 15% burn
+            let burn_rate_bps = ctx.accounts.protocol_config.burn_rate_bps;
+            let insurance_rate_bps = ctx.accounts.protocol_config.insurance_rate_bps;
+            let appeal_burn = (appeal_stake as u128 * burn_rate_bps as u128 / 10_000) as u64;
+            let appeal_ins = (appeal_stake as u128 * insurance_rate_bps as u128 / 10_000) as u64;
+            let appeal_winner = appeal_stake.saturating_sub(appeal_burn).saturating_sub(appeal_ins);
+
+            // Winner account (opponent of depositor)
+            let winner_info = if depositor == ctx.accounts.contract.provider {
+                ctx.accounts.requester_token_account.to_account_info() // requester wins
+            } else {
+                ctx.accounts.provider_token_account.to_account_info() // provider wins
+            };
+
+            if is_sol {
+                let contract_info = ctx.accounts.contract.to_account_info();
+                **contract_info.try_borrow_mut_lamports()? -= appeal_stake;
+                **winner_info.try_borrow_mut_lamports()? += appeal_winner;
+                // SOL: send burn+insurance to winner (admin redistributes)
+                **winner_info.try_borrow_mut_lamports()? += appeal_burn.saturating_add(appeal_ins);
+                if appeal_ins > 0 {
+                    ctx.accounts.insurance_pool.total_balance = ctx.accounts.insurance_pool.total_balance.saturating_add(appeal_ins);
+                }
+            } else {
+                // SWORN: burn 15%, insurance 60%, winner 25%
+                if appeal_winner > 0 {
+                    token::transfer(
+                        CpiContext::new_with_signer(
+                            ctx.accounts.token_program.to_account_info(),
+                            Transfer {
+                                from: ctx.accounts.escrow_vault.to_account_info(),
+                                to: winner_info,
+                                authority: ctx.accounts.escrow_vault.to_account_info(),
+                            },
+                            signer_seeds,
+                        ),
+                        appeal_winner,
+                    )?;
+                }
+                if appeal_ins > 0 {
+                    token::transfer(
+                        CpiContext::new_with_signer(
+                            ctx.accounts.token_program.to_account_info(),
+                            Transfer {
+                                from: ctx.accounts.escrow_vault.to_account_info(),
+                                to: ctx.accounts.insurance_vault.to_account_info(),
+                                authority: ctx.accounts.escrow_vault.to_account_info(),
+                            },
+                            signer_seeds,
+                        ),
+                        appeal_ins,
+                    )?;
+                    ctx.accounts.insurance_pool.total_balance = ctx.accounts.insurance_pool.total_balance.saturating_add(appeal_ins);
+                }
+                if appeal_burn > 0 {
+                    let burn_ctx = CpiContext::new_with_signer(
+                        ctx.accounts.token_program.to_account_info(),
+                        Burn {
+                            mint: ctx.accounts.sworn_mint.to_account_info(),
+                            from: ctx.accounts.escrow_vault.to_account_info(),
+                            authority: ctx.accounts.escrow_vault.to_account_info(),
+                        },
+                        signer_seeds,
+                    );
+                    token::burn(burn_ctx, appeal_burn)?;
+                }
+            }
+            msg!("Appeal Level 4: depositor {} LOSES. Appeal stake {} confiscated: ins={}, winner={}, burn={}",
+                depositor, appeal_stake, appeal_ins, appeal_winner, appeal_burn);
         }
     }
 
