@@ -38,11 +38,9 @@ pub fn handler_initiate(ctx: Context<InitiateDispute>, evidence_hash: [u8; 32]) 
     dispute.corrections_count = 0;
 
     msg!(
-        "Juror {} voted {}. Tally: prov={} req={} threshold={} status={:?}",
-        ctx.accounts.juror.key(),
-        if vote_for_provider { "provider" } else { "requester" },
-        dispute.votes_provider, dispute.votes_requester, majority_threshold,
-        dispute.status
+        "Dispute initiated on contract #{}. Level: DirectCorrection. Deadline: {}",
+        contract.id,
+        dispute.deadline
     );
     Ok(())
 }
