@@ -214,7 +214,7 @@ pub fn handler_calculate_trust_score(
     // This is an optimization over computing the full formula, not a semantic deviation.
     if identity.fraud_flags > 0 {
         identity.trust_score = 0;
-        msg!("TrustScore for {}: 0 (fraud flag, whitepaper \u00a74.4 P_fraud=100*flags)", identity.authority);
+        msg!("TrustScore for {}: 0 (fraud flag, whitepaper section 4.4 P_fraud=100*flags)", identity.authority);
         return Ok(());
     }
 
