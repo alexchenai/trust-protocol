@@ -262,7 +262,7 @@ pub struct EscalateToAppeal<'info> {
 /// Voting is weighted by reputation (validated via TrustScore check).
 pub fn handler_vote(ctx: Context<JuryVote>, vote_for_provider: bool) -> Result<()> {
     let dispute = &mut ctx.accounts.dispute;
-    let juror = &ctx.accounts.juror_identity;
+    let juror_identity = &ctx.accounts.juror_identity;
 
     require!(
         dispute.level == DisputeLevel::PublicJury || dispute.level == DisputeLevel::Appeal,
@@ -273,14 +273,22 @@ pub fn handler_vote(ctx: Context<JuryVote>, vote_for_provider: bool) -> Result<(
         TrustError::InvalidContractStatus
     );
     require!(
-        juror.trust_score > 70,
+        juror_identity.trust_score > 70,
         TrustError::InsufficientJuryReputation
     );
-    require!(!juror.banned, TrustError::AgentBanned);
-    require!(juror.matured, TrustError::IdentityNotMatured);
+    require!(!juror_identity.banned, TrustError::AgentBanned);
+    require!(juror_identity.matured, TrustError::IdentityNotMatured);
 
     let now = Clock::get()?.unix_timestamp;
     require!(now <= dispute.deadline, TrustError::DisputeDeadlineExpired);
+
+    // Initialize vote record (double-vote prevention: init fails if PDA already exists)
+    let vote_record = &mut ctx.accounts.vote_record;
+    vote_record.dispute = dispute.key();
+    vote_record.juror = ctx.accounts.juror.key();
+    vote_record.vote_for_provider = vote_for_provider;
+    vote_record.voted_at = now;
+    vote_record.bump = ctx.bumps.vote_record;
 
     if vote_for_provider {
         dispute.votes_provider = dispute.votes_provider.saturating_add(1);
@@ -683,6 +691,7 @@ pub struct EscalateDispute<'info> {
 
 #[derive(Accounts)]
 pub struct JuryVote<'info> {
+    #[account(mut)]
     pub juror: Signer<'info>,
 
     pub contract: Account<'info, Contract>,
@@ -700,6 +709,19 @@ pub struct JuryVote<'info> {
         constraint = juror_identity.authority == juror.key(),
     )]
     pub juror_identity: Account<'info, AgentIdentity>,
+
+    /// Double-vote prevention: one VoteRecord PDA per juror per dispute.
+    /// The `init` constraint rejects any second vote from the same juror.
+    #[account(
+        init,
+        payer = juror,
+        space = 8 + VoteRecord::INIT_SPACE,
+        seeds = [b"vote" as &[u8], dispute.key().as_ref(), juror.key().as_ref()],
+        bump,
+    )]
+    pub vote_record: Account<'info, VoteRecord>,
+
+    pub system_program: Program<'info, System>,
 }
 
 /// ResolveDispute uses Box<Account> to avoid BPF stack overflow.

@@ -303,3 +303,22 @@ pub struct ProtocolConfig {
     /// Bump seed
     pub bump: u8,
 }
+
+/// Jury vote record (Whitepaper Section 5.3: Public Jury voting)
+/// One PDA per juror per dispute. Prevents double-voting.
+/// Seeds: [b"vote", dispute_key, juror_key]
+/// Initialized in handler_vote; existence proves the juror already voted.
+#[account]
+#[derive(InitSpace)]
+pub struct VoteRecord {
+    /// The dispute this vote belongs to
+    pub dispute: Pubkey,
+    /// The juror who cast this vote
+    pub juror: Pubkey,
+    /// Whether the vote was for the provider (true) or requester (false)
+    pub vote_for_provider: bool,
+    /// Unix timestamp when vote was cast
+    pub voted_at: i64,
+    /// Bump seed
+    pub bump: u8,
+}
