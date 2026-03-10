@@ -10,16 +10,24 @@ import "math"
 //
 //	S = max(0, min(100, S_base - S_penalty - S_decay))
 //	S_base = 30*task + 20*volume + 25*quality + 20*age + 5*sponsor
-func CalculateTrustScore(a *AgentIdentity, monthsSinceCreation, monthsInactive float64) float64 {
+//
+// solToSwornRate converts SOL lamports to SWORN lamports for the volume factor.
+// Pass 0 to ignore SOL volume (conservative, safe default).
+func CalculateTrustScore(a *AgentIdentity, monthsSinceCreation, monthsInactive, solToSwornRate float64) float64 {
 	taskFactor := math.Min(1.0, math.Log10(1+float64(a.TasksCompleted))/3.0)
-	volumeFactor := math.Min(1.0, math.Log10(1+float64(a.VolumeProcessed))/6.0)
+	// Volume: SWORN + SOL converted to SWORN equivalent (whitepaper §4.2)
+	totalVolumeSworn := float64(a.VolumeProcessed) + float64(a.VolumeSol)*solToSwornRate
+	volumeFactor := math.Min(1.0, math.Log10(1+totalVolumeSworn)/6.0)
 
 	totalTasks := float64(a.TasksCompleted)
 	disputeLossRatio := 0.0
+	correctionRatio := 0.0
 	if totalTasks > 0 {
 		disputeLossRatio = float64(a.DisputesLost) / totalTasks
+		correctionRatio = float64(a.CorrectionsReceived) / totalTasks
 	}
-	qualityFactor := math.Max(0, 1.0-5*disputeLossRatio) * math.Min(1.0, totalTasks/20.0)
+	// Quality: Q = max(0, 1 - 2*C_r - 5*D_L) * min(1, N/20)  (whitepaper §4.3)
+	qualityFactor := math.Max(0, 1.0-2*correctionRatio-5*disputeLossRatio) * math.Min(1.0, totalTasks/20.0)
 
 	ageFactor := math.Min(1.0, monthsSinceCreation/24.0)
 
