@@ -78,6 +78,25 @@ jobs:
       - name: Build program
         run: anchor build
 
+      - name: Extend program data if binary grew
+        run: |
+          PROGRAM_ID="CSBAc1SiMALr4rnuCoB17BsddzthB4RAhjibGvyt6p6S"
+          NEW_SIZE=$(wc -c < target/deploy/trust_protocol.so)
+          echo "New binary size: $NEW_SIZE bytes"
+          CURRENT_SIZE=$(solana program show $PROGRAM_ID --url devnet 2>&1 | grep -oP 'Data Length: \K[0-9]+' || echo "0")
+          echo "Current program data size: ${CURRENT_SIZE:-0} bytes"
+          if [ -z "$CURRENT_SIZE" ] || [ "$CURRENT_SIZE" = "0" ]; then
+            echo "Could not determine current size, skipping extend"
+          elif [ "$NEW_SIZE" -gt "$CURRENT_SIZE" ]; then
+            EXTRA=$((NEW_SIZE - CURRENT_SIZE + 4096))
+            echo "Binary grew by $((NEW_SIZE - CURRENT_SIZE)) bytes. Extending program data by $EXTRA bytes..."
+            solana program extend $PROGRAM_ID $EXTRA --url devnet
+            echo "Extension done. New deployer balance:"
+            solana balance
+          else
+            echo "Binary fits in existing program data (new=$NEW_SIZE <= current=$CURRENT_SIZE). No extension needed."
+          fi
+
       - name: Upgrade program on devnet
         run: |
           PROGRAM_ID="CSBAc1SiMALr4rnuCoB17BsddzthB4RAhjibGvyt6p6S"

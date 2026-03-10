@@ -740,3 +740,37 @@ func NewCalculateTrustScoreInstruction(
 		DataBytes: data[:],
 	}
 }
+// NewEscalateToAppealInstruction builds the "escalate_to_appeal" instruction.
+// Level 3 → Level 4 (Appeal) escalation.
+// Whitepaper §5.4: the escalating party deposits 50% of the contract value as
+// appeal_stake ("double-or-nothing"). If they win, it is returned; if they lose,
+// it is confiscated 60/25/15 (insurance/winner/burn).
+//
+// For SWORN contracts: pass escalatorATA and escrowVault (SWORN token accounts).
+// For SOL contracts: pass any valid pubkey for both (they are not used on-chain).
+//
+// Accounts: escalator SIGNER+WRITE, contractPDA WRITE, disputePDA WRITE,
+// escalatorTokenAccount WRITE, escrowVault WRITE, tokenProgram, systemProgram.
+func NewEscalateToAppealInstruction(
+	programID solana.PublicKey,
+	escalator solana.PublicKey,
+	contractPDA solana.PublicKey,
+	disputePDA solana.PublicKey,
+	escalatorTokenAccount solana.PublicKey,
+	escrowVault solana.PublicKey,
+) solana.Instruction {
+	disc := AnchorDiscriminator("escalate_to_appeal")
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(escalator).SIGNER().WRITE(),
+			solana.Meta(contractPDA).WRITE(),
+			solana.Meta(disputePDA).WRITE(),
+			solana.Meta(escalatorTokenAccount).WRITE(),
+			solana.Meta(escrowVault).WRITE(),
+			solana.Meta(TokenProgramID),
+			solana.Meta(SystemProgramID),
+		},
+		DataBytes: disc[:],
+	}
+}
