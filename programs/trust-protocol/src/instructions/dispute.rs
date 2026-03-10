@@ -252,14 +252,15 @@ pub fn handler_resolve(ctx: Context<ResolveDispute>, provider_wins: bool) -> Res
 
             let contract_info = ctx.accounts.contract.to_account_info();
             let requester_info = ctx.accounts.requester_token_account.to_account_info();
-            let insurance_info = ctx.accounts.insurance_vault.to_account_info();
 
-            **contract_info.try_borrow_mut_lamports()? -= refund;
-            **requester_info.try_borrow_mut_lamports()? += refund;
+            // Refund + confiscation winner portion to requester
+            let total_to_requester = refund.checked_add(total_insurance).ok_or(TrustError::MathOverflow)?;
+            **contract_info.try_borrow_mut_lamports()? -= total_to_requester;
+            **requester_info.try_borrow_mut_lamports()? += total_to_requester;
 
+            // For SOL disputes: insurance portion goes to requester (admin redistributes).
+            // Insurance PDA may have 0 SOL — sending small amounts causes InsufficientFundsForRent.
             if total_insurance > 0 {
-                **contract_info.try_borrow_mut_lamports()? -= total_insurance;
-                **insurance_info.try_borrow_mut_lamports()? += total_insurance;
                 ctx.accounts.insurance_pool.total_balance = ctx.accounts.insurance_pool.total_balance.saturating_add(total_insurance);
             }
 
@@ -657,22 +658,17 @@ pub fn handler_accept_correction(ctx: Context<AcceptCorrection>) -> Result<()> {
         let contract_info = ctx.accounts.contract.to_account_info();
         let provider_info = ctx.accounts.provider_token_account.to_account_info();
         let treasury_info = ctx.accounts.treasury_token_account.to_account_info();
-        let insurance_info = ctx.accounts.insurance_vault.to_account_info();
 
         // Transfer net payment + stake to provider
         **contract_info.try_borrow_mut_lamports()? -= provider_release;
         **provider_info.try_borrow_mut_lamports()? += provider_release;
 
-        // Transfer treasury fee
-        if fee_treasury > 0 {
-            **contract_info.try_borrow_mut_lamports()? -= fee_treasury;
-            **treasury_info.try_borrow_mut_lamports()? += fee_treasury;
-        }
-
-        // Transfer insurance+burn portion
-        if fee_insurance_and_burn > 0 {
-            **contract_info.try_borrow_mut_lamports()? -= fee_insurance_and_burn;
-            **insurance_info.try_borrow_mut_lamports()? += fee_insurance_and_burn;
+        // Transfer ALL protocol fees to treasury (admin wallet) for SOL contracts.
+        // Insurance PDA may have 0 SOL — sending small amounts causes InsufficientFundsForRent.
+        let total_fees = fee_treasury.checked_add(fee_insurance_and_burn).ok_or(TrustError::MathOverflow)?;
+        if total_fees > 0 {
+            **contract_info.try_borrow_mut_lamports()? -= total_fees;
+            **treasury_info.try_borrow_mut_lamports()? += total_fees;
         }
     } else {
         // SWORN-denominated contract: SPL token transfers via escrow PDA

@@ -230,22 +230,19 @@ pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
         let contract_info = ctx.accounts.contract.to_account_info();
         let provider_info = ctx.accounts.provider_token_account.to_account_info();
         let treasury_info = ctx.accounts.treasury_token_account.to_account_info();
-        let insurance_info = ctx.accounts.insurance_vault.to_account_info();
 
         // Transfer net payment + stake to provider
         **contract_info.try_borrow_mut_lamports()? -= provider_release;
         **provider_info.try_borrow_mut_lamports()? += provider_release;
 
-        // Transfer treasury fee
-        if fee_treasury > 0 {
-            **contract_info.try_borrow_mut_lamports()? -= fee_treasury;
-            **treasury_info.try_borrow_mut_lamports()? += fee_treasury;
-        }
-
-        // Transfer insurance+burn portion
-        if fee_insurance_and_burn > 0 {
-            **contract_info.try_borrow_mut_lamports()? -= fee_insurance_and_burn;
-            **insurance_info.try_borrow_mut_lamports()? += fee_insurance_and_burn;
+        // Transfer ALL protocol fees to treasury (admin wallet) for SOL contracts.
+        // Insurance PDA may have 0 SOL and adding small fees would leave it below
+        // rent-exempt minimum, causing InsufficientFundsForRent.
+        // Admin redistributes insurance portion off-chain.
+        let total_fees = fee_treasury.checked_add(fee_insurance_and_burn).ok_or(TrustError::MathOverflow)?;
+        if total_fees > 0 {
+            **contract_info.try_borrow_mut_lamports()? -= total_fees;
+            **treasury_info.try_borrow_mut_lamports()? += total_fees;
         }
     } else {
         // SWORN-denominated contract: SPL token transfers via escrow PDA
