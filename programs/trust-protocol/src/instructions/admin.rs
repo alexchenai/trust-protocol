@@ -196,6 +196,123 @@ pub struct MigrateBondVault<'info> {
     pub system_program: Program<'info, System>,
 }
 
+/// Admin: Migrate AgentIdentity v1 (95 bytes) to v2 (123 bytes).
+///
+/// v1 layout (87 data bytes after 8-byte discriminator):
+///   [8..40]  authority (32)
+///   [40..48] identity_bond (8)
+///   [48..56] registered_at (8)
+///   [56]     matured (1)
+///   [57..59] trust_score (2)
+///   [59..67] tasks_completed (8)
+///   [67..75] volume_processed (8)
+///   [75..79] disputes_lost (4)
+///   [79..83] disputes_won (4)
+///   [83..87] tasks_abandoned (4)
+///   [87..91] fraud_flags (4)
+///   [91..93] sponsor_bonus (2)
+///   [93]     banned (1)
+///   [94]     bump (1)
+///
+/// v2 layout inserts 28 bytes in the middle:
+///   [75..83]   volume_sol (8) = 0
+///   [99..103]  total_deliveries (4) = 0
+///   [103..107] corrections_received (4) = 0
+///   [107..111] active_contracts (4) = 0
+///   [111..119] last_task_completed_at (8) = 0
+/// Old fields [75..95] shift to [83..99] and [119..123] accordingly.
+pub fn handler_migrate_agent_identity(ctx: Context<MigrateAgentIdentity>) -> Result<()> {
+    use crate::errors::TrustError;
+
+    let account_info = ctx.accounts.agent_identity.to_account_info();
+
+    // Check owner is this program
+    require!(
+        account_info.owner == ctx.program_id,
+        TrustError::UnauthorizedAdmin
+    );
+
+    let old_len = account_info.data_len();
+    let new_len: usize = 123; // 8 discriminator + 115 data
+
+    // Already migrated — idempotent skip
+    if old_len == new_len {
+        msg!("AgentIdentity already at v2 size (123), skipping");
+        return Ok(());
+    }
+
+    require!(old_len == 95, TrustError::InvalidAccountSize);
+
+    // Top up rent if needed
+    let rent = Rent::get()?;
+    let new_min_balance = rent.minimum_balance(new_len);
+    let old_balance = account_info.lamports();
+    if old_balance < new_min_balance {
+        let diff = new_min_balance - old_balance;
+        anchor_lang::system_program::transfer(
+            CpiContext::new(
+                ctx.accounts.system_program.to_account_info(),
+                anchor_lang::system_program::Transfer {
+                    from: ctx.accounts.admin.to_account_info(),
+                    to: account_info.clone(),
+                },
+            ),
+            diff,
+        )?;
+    }
+
+    // Save bytes that must be relocated (positions relative to start of account data)
+    //   old[75..91] = disputes_lost + disputes_won + tasks_abandoned + fraud_flags (16 bytes)
+    //   old[91..95] = sponsor_bonus + banned + bump (4 bytes)
+    let disputes_to_fraud: [u8; 16];
+    let tail: [u8; 4];
+    {
+        let data = account_info.try_borrow_data()?;
+        disputes_to_fraud = data[75..91].try_into().unwrap();
+        tail = data[91..95].try_into().unwrap();
+    }
+
+    // Realloc: bytes 0..95 preserved, bytes 95..123 zeroed
+    account_info.realloc(new_len, false)?;
+
+    {
+        let mut data = account_info.try_borrow_mut_data()?;
+        // 1. Move tail (sponsor_bonus + banned + bump) to 119..123
+        data[119..123].copy_from_slice(&tail);
+        // 2. Move disputes_lost..fraud_flags to 83..99 (shifts +8 due to volume_sol insertion)
+        data[83..99].copy_from_slice(&disputes_to_fraud);
+        // 3. Zero volume_sol slot at 75..83 (old data at these offsets is now garbage)
+        data[75..83].fill(0);
+        // 4. Zero new fields total_deliveries..last_task_completed_at at 99..119
+        //    (bytes 99..119 partially have old data after the shift; clear all)
+        data[99..119].fill(0);
+    }
+
+    msg!("AgentIdentity migrated to v2: {} -> {} bytes", old_len, new_len);
+    Ok(())
+}
+
+#[derive(Accounts)]
+pub struct MigrateAgentIdentity<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+
+    #[account(
+        seeds = [b"protocol-config"],
+        bump = protocol_config.bump,
+        constraint = protocol_config.admin == admin.key(),
+    )]
+    pub protocol_config: Account<'info, ProtocolConfig>,
+
+    /// CHECK: Raw account — validated via owner == program_id check in handler.
+    /// Cannot use Account<AgentIdentity> because old accounts have 95 bytes
+    /// and would fail Anchor deserialization against the new 123-byte struct.
+    #[account(mut)]
+    pub agent_identity: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
 /// Admin: Force-mature an agent (devnet testing only).
 /// In production, maturation happens after 30 days automatically.
 pub fn handler_force_mature(ctx: Context<ForceMatureAgent>) -> Result<()> {

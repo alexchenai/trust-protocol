@@ -628,6 +628,31 @@ func NewCheckMaturationInstruction(
 	}
 }
 
+// NewMigrateAgentIdentityInstruction builds "migrate_agent_identity" (no extra args).
+// Reallocs an old AgentIdentity account from 95 bytes (v1) to 123 bytes (v2).
+// Inserts volume_sol, total_deliveries, corrections_received, active_contracts,
+// and last_task_completed_at fields (all zero) at the correct Borsh offsets.
+// Idempotent: already-migrated accounts (123 bytes) are skipped.
+// Accounts: admin (signer, writable), protocol_config (read), agent_identity (writable), system_program.
+func NewMigrateAgentIdentityInstruction(
+	programID solana.PublicKey,
+	admin solana.PublicKey,
+	protocolConfigPDA solana.PublicKey,
+	agentIdentityPDA solana.PublicKey,
+) solana.Instruction {
+	disc := AnchorDiscriminator("migrate_agent_identity")
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(admin).SIGNER().WRITE(),
+			solana.Meta(protocolConfigPDA),
+			solana.Meta(agentIdentityPDA).WRITE(),
+			solana.Meta(SystemProgramID),
+		},
+		DataBytes: disc[:],
+	}
+}
+
 // NewCalculateTrustScoreInstruction builds "calculate_trust_score" with sol_to_sworn_rate arg.
 // Permissionless: any caller can trigger TrustScore recalculation.
 // Implements full whitepaper formula (5 factors + penalties + decay) on-chain.

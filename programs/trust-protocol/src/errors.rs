@@ -60,4 +60,6 @@ pub enum TrustError {
     MaxCorrectionsReached,
     #[msg("Destination account does not match expected recipient")]
     InvalidDestination,
+    #[msg("Account size is not the expected old format size")]
+    InvalidAccountSize,
 }

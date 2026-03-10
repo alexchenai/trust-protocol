@@ -185,4 +185,12 @@ pub mod trust_protocol {
     pub fn force_mature(ctx: Context<ForceMatureAgent>) -> Result<()> {
         admin::handler_force_mature(ctx)
     }
+
+    /// Migrate AgentIdentity v1 (95 bytes) to v2 (123 bytes).
+    /// Inserts volume_sol, total_deliveries, corrections_received, active_contracts,
+    /// last_task_completed_at fields (all zero) at correct Borsh offsets.
+    /// Idempotent: already-migrated accounts (123 bytes) are skipped.
+    pub fn migrate_agent_identity(ctx: Context<MigrateAgentIdentity>) -> Result<()> {
+        admin::handler_migrate_agent_identity(ctx)
+    }
 }
