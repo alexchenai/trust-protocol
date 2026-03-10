@@ -69,6 +69,12 @@ jobs:
           echo "Wallet: $(solana-keygen pubkey /tmp/deployer.json)"
           solana balance
 
+      - name: Close orphaned buffer accounts
+        run: |
+          echo "Recovering SOL from any orphaned program buffers..."
+          solana program close --buffers --url devnet || echo "No buffers to close (or none found)"
+          solana balance
+
       - name: Build program
         run: anchor build
 
