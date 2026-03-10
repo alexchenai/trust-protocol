@@ -69,6 +69,13 @@ jobs:
           echo "Wallet: $(solana-keygen pubkey /tmp/deployer.json)"
           solana balance
 
+      - name: Top up deployer SOL via devnet faucet
+        run: |
+          echo "Requesting devnet airdrop (GitHub runner IP bypasses rate limit)..."
+          solana airdrop 2 --url devnet || echo "Airdrop unavailable, continuing with current balance"
+          echo "Balance after airdrop:"
+          solana balance
+
       - name: Close orphaned buffer accounts
         run: |
           echo "Recovering SOL from any orphaned program buffers..."
