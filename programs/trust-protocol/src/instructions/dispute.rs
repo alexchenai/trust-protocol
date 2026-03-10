@@ -70,8 +70,9 @@ pub fn handler_respond(ctx: Context<RespondDispute>, response_hash: [u8; 32]) ->
 }
 
 /// Escalate dispute to the next level.
-/// Level 1 -> 2 (Private Rounds), 2 -> 3 (Public Jury), 3 -> 4 (Appeal).
-/// Whitepaper: Appeal is double-or-nothing with larger jury.
+/// Level 1 -> 2 (Private Rounds), 2 -> 3 (Public Jury).
+/// Level 3 -> 4 (Appeal) requires stake deposit: use escalate_to_appeal instead.
+/// Whitepaper Section 5.4: Appeal is double-or-nothing -- stake deposit is mandatory.
 pub fn handler_escalate(ctx: Context<EscalateDispute>) -> Result<()> {
     let dispute = &mut ctx.accounts.dispute;
     let now = Clock::get()?.unix_timestamp;
@@ -85,14 +86,16 @@ pub fn handler_escalate(ctx: Context<EscalateDispute>) -> Result<()> {
     let new_level = match dispute.level {
         DisputeLevel::DirectCorrection => DisputeLevel::PrivateRounds,
         DisputeLevel::PrivateRounds => DisputeLevel::PublicJury,
-        DisputeLevel::PublicJury => DisputeLevel::Appeal,
+        // Level 3 -> 4 (Appeal) requires stake deposit via escalate_to_appeal instruction.
+        // Whitepaper Section 5.4: double-or-nothing stake is mandatory for Appeal level.
+        DisputeLevel::PublicJury => return Err(TrustError::MaxDisputeLevel.into()),
         DisputeLevel::Appeal => return Err(TrustError::MaxDisputeLevel.into()),
     };
 
     let deadline_days = match new_level {
         DisputeLevel::PrivateRounds => 5, // 5 days for private negotiation
         DisputeLevel::PublicJury => 7,    // 7 days for jury voting
-        DisputeLevel::Appeal => 10,       // 10 days for appeal jury
+
         _ => 7,
     };
 
@@ -111,7 +114,6 @@ pub fn handler_escalate(ctx: Context<EscalateDispute>) -> Result<()> {
                 else if contract_value < 1_000_000_000 { 5 }
                 else { 7 };
         }
-        DisputeLevel::Appeal => dispute.jury_size = 9, // independent larger jury
         _ => {}
     }
 
