@@ -101,7 +101,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	recent, err := client.GetRecentBlockhash(ctx, rpc.CommitmentFinalized)
+	recent, err := client.GetLatestBlockhash(ctx, rpc.CommitmentFinalized)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "blockhash: %v\n", err)
 		os.Exit(1)
