@@ -28,7 +28,7 @@ pub mod trust_protocol {
     // === Identity Management (Whitepaper Section 2) ===
 
     /// Register a new agent with soulbound identity bond (2-5 SWORN).
-    /// Creates DID: did:trust:{pubkey}. 30-day maturation period.
+    /// Creates DID: did:trust:{pubkey}. 14-day maturation period (+ 5 tasks).
     pub fn register_agent(ctx: Context<RegisterAgent>, bond_amount: u64) -> Result<()> {
         identity::handler_register(ctx, bond_amount)
     }

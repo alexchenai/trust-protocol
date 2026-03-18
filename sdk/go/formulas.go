@@ -77,7 +77,7 @@ func ExposureLimit(depositedCapital uint64) uint64 {
 	return depositedCapital * 3
 }
 
-// FeeDistribution holds the 1% protocol fee breakdown (70/20/10).
+// FeeDistribution holds the protocol fee breakdown (70/20/10).\n// Fee rate: 0.5% for SWORN contracts, 1.0% for SOL contracts (Whitepaper §11.8).
 type FeeDistribution struct {
 	TotalFee      uint64 `json:"total_fee"`
 	Treasury      uint64 `json:"treasury"`

@@ -28,7 +28,7 @@ func AccountDiscriminator(accountName string) [8]byte {
 // ---------------------------------------------------------------------------
 
 // AgentIdentity represents a soulbound agent identity on-chain.
-// Anchor discriminator: 8 bytes, then 115 bytes of fields = 123 total.
+// Anchor discriminator: 8 bytes, then 136 bytes of fields = 144 total.
 // Field order mirrors state.rs exactly (Borsh serialization).
 type AgentIdentity struct {
 	Authority                    solana.PublicKey `json:"authority"`
@@ -129,7 +129,7 @@ func (a *AgentIdentity) DID() string {
 }
 
 // ProtocolConfig represents the global protocol configuration on-chain.
-// Anchor discriminator: 8 bytes, then 125 bytes = 133 total.
+// Anchor discriminator: 8 bytes, then 138 bytes of fields = 146 total.
 type ProtocolConfig struct {
 	Admin                   solana.PublicKey `json:"admin"`
 	SwornMint               solana.PublicKey `json:"sworn_mint"`
@@ -246,12 +246,11 @@ const (
 	ContractStatusResolvedProvider  ContractStatus = 6
 	ContractStatusResolvedRequester ContractStatus = 7
 	ContractStatusProposed          ContractStatus = 8
-	ContractStatusCancelledExpired  ContractStatus = 9
 )
 
 // String returns the human-readable name.
 func (s ContractStatus) String() string {
-	names := [...]string{"Created", "Active", "Delivered", "Completed", "Disputed", "Cancelled", "ResolvedProvider", "ResolvedRequester", "Proposed", "Cancelled"}
+	names := [...]string{"Created", "Active", "Delivered", "Completed", "Disputed", "Cancelled", "ResolvedProvider", "ResolvedRequester", "Proposed"}
 	if int(s) < len(names) {
 		return names[s]
 	}
