@@ -715,6 +715,29 @@ func NewMigrateDisputeAppealStakeInstruction(
 	}
 }
 
+// NewMigrateProtocolConfigInstruction builds "migrate_protocol_config" (no extra args).
+// Reallocs ProtocolConfig from 133 bytes (v1) to 146 bytes (v2).
+// Adds: protocol_fee_sworn_bps (50), protocol_fee_sol_bps (100),
+// max_corrections (3), deadline_validation (259200).
+// Idempotent: already-migrated accounts (146 bytes) are skipped.
+// Accounts: admin (signer, writable), protocol_config (writable), system_program.
+func NewMigrateProtocolConfigInstruction(
+	programID solana.PublicKey,
+	admin solana.PublicKey,
+	protocolConfigPDA solana.PublicKey,
+) solana.Instruction {
+	disc := AnchorDiscriminator("migrate_protocol_config")
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(admin).SIGNER().WRITE(),
+			solana.Meta(protocolConfigPDA).WRITE(),
+			solana.Meta(SystemProgramID),
+		},
+		DataBytes: disc[:],
+	}
+}
+
 // NewCalculateTrustScoreInstruction builds "calculate_trust_score" with sol_to_sworn_rate arg.
 // Permissionless: any caller can trigger TrustScore recalculation.
 // Implements full whitepaper formula (5 factors + penalties + decay) on-chain.
