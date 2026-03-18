@@ -11,7 +11,7 @@ pub mod state;
 
 use instructions::*;
 
-declare_id!("BqYfaHk3PBq8M54R3iJJXfJSa4Kndx369zQohkG3x3pB");
+declare_id!("CSBAc1SiMALr4rnuCoB17BsddzthB4RAhjibGvyt6p6S");
 
 #[program]
 pub mod trust_protocol {
@@ -249,5 +249,13 @@ pub mod trust_protocol {
     /// Idempotent: already-migrated accounts (123 bytes) are skipped.
     pub fn migrate_agent_identity(ctx: Context<MigrateAgentIdentity>) -> Result<()> {
         admin::handler_migrate_agent_identity(ctx)
+    }
+
+    /// Migrate ProtocolConfig from v1 (133 bytes) to v2 (146 bytes).
+    /// Adds protocol_fee_sworn_bps, protocol_fee_sol_bps, max_corrections,
+    /// deadline_validation fields with whitepaper defaults.
+    /// Idempotent: already-migrated accounts (146 bytes) are skipped.
+    pub fn migrate_protocol_config(ctx: Context<MigrateProtocolConfig>) -> Result<()> {
+        admin::handler_migrate_protocol_config(ctx)
     }
 }

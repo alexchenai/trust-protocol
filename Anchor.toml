@@ -6,10 +6,10 @@ seeds = false
 skip-lint = false
 
 [programs.localnet]
-trust_protocol = "BqYfaHk3PBq8M54R3iJJXfJSa4Kndx369zQohkG3x3pB"
+trust_protocol = "CSBAc1SiMALr4rnuCoB17BsddzthB4RAhjibGvyt6p6S"
 
 [programs.devnet]
-trust_protocol = "BqYfaHk3PBq8M54R3iJJXfJSa4Kndx369zQohkG3x3pB"
+trust_protocol = "CSBAc1SiMALr4rnuCoB17BsddzthB4RAhjibGvyt6p6S"
 
 [registry]
 url = "https://api.apr.dev"

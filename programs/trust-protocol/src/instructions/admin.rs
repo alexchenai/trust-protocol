@@ -385,3 +385,129 @@ pub struct UpdateConfig<'info> {
     )]
     pub protocol_config: Account<'info, ProtocolConfig>,
 }
+
+/// Admin: Migrate ProtocolConfig from v1 (133 bytes) to v2 (146 bytes).
+/// Adds 4 new governable fields before the bump byte:
+///   protocol_fee_sworn_bps (u16), protocol_fee_sol_bps (u16),
+///   max_corrections (u8), deadline_validation (i64).
+/// Defaults per whitepaper: 50 bps, 100 bps, 3, 259200 (72h).
+/// Idempotent: already-migrated accounts (146 bytes) are skipped.
+///
+/// Old layout (133 bytes):
+///   [0..8]     discriminator
+///   [8..132]   existing fields (admin, sworn_mint, ..., total_agents)
+///   [132]      bump (1 byte)
+///
+/// New layout (146 bytes):
+///   [0..8]     discriminator
+///   [8..132]   existing fields (unchanged)
+///   [132..134] protocol_fee_sworn_bps (u16) = 50
+///   [134..136] protocol_fee_sol_bps (u16) = 100
+///   [136]      max_corrections (u8) = 3
+///   [137..145] deadline_validation (i64) = 259200
+///   [145]      bump (u8, relocated from [132])
+pub fn handler_migrate_protocol_config(ctx: Context<MigrateProtocolConfig>) -> Result<()> {
+    use crate::errors::TrustError;
+
+    let account_info = ctx.accounts.protocol_config.to_account_info();
+
+    require!(
+        account_info.owner == ctx.program_id,
+        TrustError::UnauthorizedAdmin
+    );
+
+    // Validate admin from raw bytes: admin pubkey is at [8..40] after discriminator
+    {
+        let data = account_info.try_borrow_data()?;
+        let stored_admin = Pubkey::try_from(&data[8..40]).unwrap();
+        require!(
+            stored_admin == ctx.accounts.admin.key(),
+            TrustError::UnauthorizedAdmin
+        );
+    }
+
+    // Validate PDA seeds
+    let (expected_pda, _) = Pubkey::find_program_address(&[b"protocol-config"], ctx.program_id);
+    require!(
+        account_info.key() == expected_pda,
+        TrustError::UnauthorizedAdmin
+    );
+
+    let old_len: usize = 133;
+    let new_len: usize = 146;
+    let current_len = account_info.data_len();
+
+    // Already migrated — idempotent skip
+    if current_len == new_len {
+        msg!("ProtocolConfig already at v2 size (146), skipping");
+        return Ok(());
+    }
+
+    require!(current_len == old_len, TrustError::InvalidAccountSize);
+
+    // Top up rent for the larger account
+    let rent = Rent::get()?;
+    let new_min_balance = rent.minimum_balance(new_len);
+    let old_balance = account_info.lamports();
+    if old_balance < new_min_balance {
+        let diff = new_min_balance - old_balance;
+        anchor_lang::system_program::transfer(
+            CpiContext::new(
+                ctx.accounts.system_program.to_account_info(),
+                anchor_lang::system_program::Transfer {
+                    from: ctx.accounts.admin.to_account_info(),
+                    to: account_info.clone(),
+                },
+            ),
+            diff,
+        )?;
+    }
+
+    // Save the bump byte (last byte in old layout, position 132)
+    let bump_byte: u8;
+    {
+        let data = account_info.try_borrow_data()?;
+        bump_byte = data[132];
+    }
+
+    // Realloc to new size (zero-fills new bytes)
+    account_info.realloc(new_len, false)?;
+
+    {
+        let mut data = account_info.try_borrow_mut_data()?;
+
+        // New fields at [132..145], bump at [145]
+        // protocol_fee_sworn_bps: u16 = 50 (0.5%) at [132..134]
+        data[132..134].copy_from_slice(&50u16.to_le_bytes());
+        // protocol_fee_sol_bps: u16 = 100 (1.0%) at [134..136]
+        data[134..136].copy_from_slice(&100u16.to_le_bytes());
+        // max_corrections: u8 = 3 at [136]
+        data[136] = 3u8;
+        // deadline_validation: i64 = 259200 (72h) at [137..145]
+        data[137..145].copy_from_slice(&259200i64.to_le_bytes());
+        // bump: relocated from old [132] to [145]
+        data[145] = bump_byte;
+    }
+
+    msg!(
+        "ProtocolConfig migrated to v2: {} -> {} bytes (bump={})",
+        old_len,
+        new_len,
+        bump_byte
+    );
+    Ok(())
+}
+
+#[derive(Accounts)]
+pub struct MigrateProtocolConfig<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+
+    /// CHECK: Raw account — validated via owner == program_id check in handler.
+    /// Cannot use Account<ProtocolConfig> because old accounts have 133 bytes
+    /// and would fail Anchor deserialization against the new 146-byte struct.
+    #[account(mut)]
+    pub protocol_config: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
