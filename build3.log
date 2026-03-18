@@ -1,0 +1,5 @@
+error: failed to parse lock file at: /app/data/sworn-protocol/Cargo.lock
+
+Caused by:
+  lock file version 4 requires `-Znext-lockfile-bump`
+DONE

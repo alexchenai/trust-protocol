@@ -43,7 +43,12 @@ func CalculateTrustScore(a *AgentIdentity, monthsSinceCreation, monthsInactive, 
 		150*(float64(a.TasksAbandoned)/maxTasks) +
 		100*float64(a.FraudFlags)
 
-	sDecay := math.Min(40, 2.0*monthsInactive)
+	// Decay rate: 2.0/month normally, 0.5/month during hibernation (Whitepaper §8.6)
+	decayRate := 2.0
+	if a.IsHibernating {
+		decayRate = 0.5
+	}
+	sDecay := math.Min(40, decayRate*monthsInactive)
 
 	score := sBase - sPenalty - sDecay
 	return math.Min(100, math.Max(0, score))
@@ -80,15 +85,34 @@ type FeeDistribution struct {
 	Burn          uint64 `json:"burn"`
 }
 
-// CalculateProtocolFee computes the 1.0% fee with 70/20/10 split.
-func CalculateProtocolFee(contractValue uint64) FeeDistribution {
-	totalFee := contractValue / 100
+// CalculateProtocolFee computes the fee with 70/20/10 split.
+// Whitepaper §11.8: 0.5% for SWORN contracts, 1.0% for SOL contracts.
+// isSworn=true => 0.5% (50 bps), isSworn=false => 1.0% (100 bps).
+func CalculateProtocolFee(contractValue uint64, isSworn bool) FeeDistribution {
+	var feeBps uint64 = 100 // 1.0% for SOL
+	if isSworn {
+		feeBps = 50 // 0.5% for SWORN (half-fee incentive)
+	}
+	totalFee := contractValue * feeBps / 10_000
 	return FeeDistribution{
 		TotalFee:      totalFee,
 		Treasury:      totalFee * 70 / 100,
 		InsurancePool: totalFee * 20 / 100,
 		Burn:          totalFee * 10 / 100,
 	}
+}
+
+// CalculateEscrowFactor returns the requester escrow factor [0.30, 1.00].
+// Whitepaper §7.7: factor(ts) = max(0.30, 1.0 - 0.70*(ts/100)^1.5)
+// New requesters (TS=0) deposit 100%. Experienced ones deposit as little as 30%.
+func CalculateEscrowFactor(trustScore float64) float64 {
+	return math.Max(0.30, 1.0-0.70*math.Pow(trustScore/100.0, 1.5))
+}
+
+// CalculateEscrowRequired returns the actual SWORN/SOL deposit for a requester.
+func CalculateEscrowRequired(contractValue uint64, requesterTrustScore float64) uint64 {
+	factor := CalculateEscrowFactor(requesterTrustScore)
+	return uint64(float64(contractValue) * factor)
 }
 
 // ConfiscationSplit holds the split of confiscated stakes (15/60/25).

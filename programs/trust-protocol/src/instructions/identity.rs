@@ -4,7 +4,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Token, TokenAccount, Transfer};
 
 /// Register a new agent identity with a SWORN identity bond (2-5 tokens).
-/// Identity is soulbound (non-transferable) and requires 30-day maturation.
+/// Identity is soulbound (non-transferable) and requires 14-day maturation (+ 5 tasks).
 /// Whitepaper Section 2: Identity Model + Anti-Sybil
 pub fn handler_register(ctx: Context<RegisterAgent>, bond_amount: u64) -> Result<()> {
     let config = &ctx.accounts.protocol_config;
@@ -46,6 +46,10 @@ pub fn handler_register(ctx: Context<RegisterAgent>, bond_amount: u64) -> Result
     identity.last_task_completed_at = 0;
     identity.sponsor_bonus = 0;
     identity.banned = false;
+    identity.is_hibernating = false;
+    identity.hibernation_started_at = 0;
+    identity.hibernation_ends_at = 0;
+    identity.tasks_since_last_hibernation = 0;
     identity.bump = ctx.bumps.agent_identity;
 
     // Increment global agent counter
@@ -282,10 +286,17 @@ pub fn handler_calculate_trust_score(
 
     let ts_raw = s_base.saturating_sub(s_penalty) as u16;
 
-    // --- Decay: 2 pts/month inactive, max -40 ---
+    // --- Decay: 2 pts/month inactive (0.5/month during hibernation, §8.6), max -40 ---
     let ts_after_decay = if identity.last_task_completed_at > 0 {
         let months_inactive = ((now - identity.last_task_completed_at).max(0) as u64) / (30 * 86_400);
-        let decay = (months_inactive * 2).min(40);
+        let decay = if identity.is_hibernating {
+            // Hibernating: 0.5 pts/month = 1 pt per 2 months. Max 40 pts.
+            // Integer: decay = months_inactive / 2 (round down), capped at 40.
+            (months_inactive / 2).min(40)
+        } else {
+            // Active: 2 pts/month, max 40
+            (months_inactive * 2).min(40)
+        };
         ts_raw.saturating_sub(decay as u16)
     } else {
         ts_raw
@@ -430,4 +441,121 @@ pub struct CalculateTrustScore<'info> {
         bump = protocol_config.bump,
     )]
     pub protocol_config: Account<'info, ProtocolConfig>,
+}
+
+// ============================================================
+// §8.6 Hibernation — declared hibernation for seasonal agents
+// ============================================================
+
+/// Declare hibernation. Agent pauses activity; decay drops to 0.5/month.
+/// Whitepaper §8.6: Must be called BEFORE going inactive. Not retroactive.
+/// Cooldown: must have completed 5 tasks since last hibernation.
+/// Max duration: 12 months. Agent cannot accept contracts while hibernating.
+pub fn handler_hibernate(ctx: Context<HibernateAgent>, duration_months: u8) -> Result<()> {
+    require!(
+        duration_months >= 1 && duration_months <= 12,
+        TrustError::InvalidHibernationDuration
+    );
+
+    let identity = &mut ctx.accounts.agent_identity;
+    require!(!identity.banned, TrustError::AgentBanned);
+    require!(!identity.is_hibernating, TrustError::AlreadyHibernating);
+
+    // Cooldown: 5 tasks since last hibernation (or first hibernation, tasks_since_last_hibernation starts at 0)
+    require!(
+        identity.tasks_since_last_hibernation >= 5 || identity.hibernation_ends_at == 0,
+        TrustError::HibernationCooldown
+    );
+
+    let now = Clock::get()?.unix_timestamp;
+    let duration_secs = (duration_months as i64) * 30 * 86_400;
+
+    identity.is_hibernating = true;
+    identity.hibernation_started_at = now;
+    identity.hibernation_ends_at = now + duration_secs;
+    identity.tasks_since_last_hibernation = 0; // Reset cooldown counter
+
+    msg!(
+        "Agent {} declared hibernation: {} months, ends at {}",
+        identity.authority,
+        duration_months,
+        identity.hibernation_ends_at
+    );
+    Ok(())
+}
+
+/// Wake from hibernation early (or auto-expire hibernation).
+/// Whitepaper §8.6: Agent can end hibernation early by calling wake().
+/// After wake, agent must complete at least 5 tasks before next hibernation.
+pub fn handler_wake(ctx: Context<WakeAgent>) -> Result<()> {
+    let identity = &mut ctx.accounts.agent_identity;
+    require!(!identity.banned, TrustError::AgentBanned);
+    require!(identity.is_hibernating, TrustError::AgentNotHibernating);
+
+    let now = Clock::get()?.unix_timestamp;
+
+    identity.is_hibernating = false;
+    identity.hibernation_started_at = 0;
+    identity.hibernation_ends_at = 0;
+    // tasks_since_last_hibernation stays 0; must complete 5 tasks before next hibernation
+
+    msg!(
+        "Agent {} woke from hibernation at {}",
+        identity.authority,
+        now
+    );
+    Ok(())
+}
+
+/// Permissionless: expire hibernation after max duration has passed.
+/// Whitepaper §8.6: If agent doesn't return after 12 months, standard decay resumes.
+/// Anyone can call this to reset hibernation state once expired.
+pub fn handler_expire_hibernation(ctx: Context<WakeAgent>) -> Result<()> {
+    let identity = &mut ctx.accounts.agent_identity;
+    require!(identity.is_hibernating, TrustError::AgentNotHibernating);
+
+    let now = Clock::get()?.unix_timestamp;
+    require!(
+        now > identity.hibernation_ends_at,
+        TrustError::InvalidHibernationDuration // reuse: hibernation hasn't expired yet
+    );
+
+    identity.is_hibernating = false;
+    identity.hibernation_started_at = 0;
+    identity.hibernation_ends_at = 0;
+
+    msg!(
+        "Hibernation expired for agent {} at {}",
+        identity.authority,
+        now
+    );
+    Ok(())
+}
+
+#[derive(Accounts)]
+pub struct HibernateAgent<'info> {
+    #[account(mut)]
+    pub agent: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"agent-identity" as &[u8], agent.key().as_ref()],
+        bump = agent_identity.bump,
+        constraint = agent_identity.authority == agent.key() @ TrustError::UnauthorizedProvider,
+    )]
+    pub agent_identity: Account<'info, AgentIdentity>,
+}
+
+#[derive(Accounts)]
+pub struct WakeAgent<'info> {
+    #[account(mut)]
+    pub agent: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"agent-identity" as &[u8], agent.key().as_ref()],
+        bump = agent_identity.bump,
+        constraint = agent_identity.authority == agent.key() @ TrustError::UnauthorizedProvider,
+    )]
+    pub agent_identity: Account<'info, AgentIdentity>,
 }

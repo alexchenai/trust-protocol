@@ -21,6 +21,10 @@ pub fn handler(ctx: Context<Initialize>, params: InitializeParams) -> Result<()>
     config.governance_phase = 0;
     config.total_contracts = 0;
     config.total_agents = 0;
+    config.protocol_fee_sworn_bps = 50;    // 0.5% — Whitepaper §11.8: SWORN contracts pay half
+    config.protocol_fee_sol_bps  = 100;   // 1.0% — SOL contracts (incentive to migrate to SWORN)
+    config.max_corrections = 3;           // §12.4.1: governable, range 1-10
+    config.deadline_validation = 259_200; // 72h in seconds — §7.5 / §12.4.1
     config.bump = ctx.bumps.protocol_config;
 
     let pool = &mut ctx.accounts.insurance_pool;

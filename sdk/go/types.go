@@ -31,30 +31,41 @@ func AccountDiscriminator(accountName string) [8]byte {
 // Anchor discriminator: 8 bytes, then 115 bytes of fields = 123 total.
 // Field order mirrors state.rs exactly (Borsh serialization).
 type AgentIdentity struct {
-	Authority              solana.PublicKey `json:"authority"`
-	IdentityBond           uint64           `json:"identity_bond"`
-	RegisteredAt           int64            `json:"registered_at"`
-	Matured                bool             `json:"matured"`
-	TrustScore             uint16           `json:"trust_score"`
-	TasksCompleted         uint64           `json:"tasks_completed"`
-	VolumeProcessed        uint64           `json:"volume_processed"` // SWORN lamports
-	VolumeSol              uint64           `json:"volume_sol"`       // SOL lamports
-	DisputesLost           uint32           `json:"disputes_lost"`
-	DisputesWon            uint32           `json:"disputes_won"`
-	TasksAbandoned         uint32           `json:"tasks_abandoned"`
-	FraudFlags             uint32           `json:"fraud_flags"`
-	TotalDeliveries        uint32           `json:"total_deliveries"`
-	CorrectionsReceived    uint32           `json:"corrections_received"`
-	ActiveContracts        uint32           `json:"active_contracts"`
-	LastTaskCompletedAt    int64            `json:"last_task_completed_at"`
-	SponsorBonus           uint16           `json:"sponsor_bonus"`
-	Banned                 bool             `json:"banned"`
-	Bump                   uint8            `json:"bump"`
+	Authority                    solana.PublicKey `json:"authority"`
+	IdentityBond                 uint64           `json:"identity_bond"`
+	RegisteredAt                 int64            `json:"registered_at"`
+	Matured                      bool             `json:"matured"`
+	TrustScore                   uint16           `json:"trust_score"`
+	TasksCompleted               uint64           `json:"tasks_completed"`
+	VolumeProcessed              uint64           `json:"volume_processed"` // SWORN lamports
+	VolumeSol                    uint64           `json:"volume_sol"`       // SOL lamports
+	DisputesLost                 uint32           `json:"disputes_lost"`
+	DisputesWon                  uint32           `json:"disputes_won"`
+	TasksAbandoned               uint32           `json:"tasks_abandoned"`
+	FraudFlags                   uint32           `json:"fraud_flags"`
+	TotalDeliveries              uint32           `json:"total_deliveries"`
+	CorrectionsReceived          uint32           `json:"corrections_received"`
+	ActiveContracts              uint32           `json:"active_contracts"`
+	LastTaskCompletedAt          int64            `json:"last_task_completed_at"`
+	SponsorBonus                 uint16           `json:"sponsor_bonus"`
+	Banned                       bool             `json:"banned"`
+	// Hibernation fields (Whitepaper §8.6)
+	IsHibernating                bool             `json:"is_hibernating"`
+	HibernationStartedAt         int64            `json:"hibernation_started_at"`
+	HibernationEndsAt            int64            `json:"hibernation_ends_at"`
+	TasksSinceLastHibernation    uint32           `json:"tasks_since_last_hibernation"`
+	Bump                         uint8            `json:"bump"`
 }
 
 // AgentIdentitySize is the on-chain size including Anchor discriminator.
-// 8 disc + 32 + 8 + 8 + 1 + 2 + 8 + 8 + 8 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 8 + 2 + 1 + 1 = 123
-const AgentIdentitySize = 123
+// 8 disc + 32(authority) + 8(bond) + 8(registered_at) + 1(matured) + 2(trust_score)
+// + 8(tasks_completed) + 8(volume_processed) + 8(volume_sol)
+// + 4(disputes_lost) + 4(disputes_won) + 4(tasks_abandoned) + 4(fraud_flags)
+// + 4(total_deliveries) + 4(corrections_received) + 4(active_contracts)
+// + 8(last_task_completed_at) + 2(sponsor_bonus) + 1(banned)
+// + 1(is_hibernating) + 8(hibernation_started_at) + 8(hibernation_ends_at)
+// + 4(tasks_since_last_hibernation) + 1(bump) = 144
+const AgentIdentitySize = 144
 
 // DecodeAgentIdentity parses raw account data (including 8-byte discriminator).
 func DecodeAgentIdentity(data []byte) (*AgentIdentity, error) {
@@ -99,6 +110,15 @@ func DecodeAgentIdentity(data []byte) (*AgentIdentity, error) {
 	o += 2
 	a.Banned = data[o] == 1
 	o++
+	// Hibernation fields (§8.6)
+	a.IsHibernating = data[o] == 1
+	o++
+	a.HibernationStartedAt = int64(binary.LittleEndian.Uint64(data[o : o+8]))
+	o += 8
+	a.HibernationEndsAt = int64(binary.LittleEndian.Uint64(data[o : o+8]))
+	o += 8
+	a.TasksSinceLastHibernation = binary.LittleEndian.Uint32(data[o : o+4])
+	o += 4
 	a.Bump = data[o]
 	return a, nil
 }
@@ -126,11 +146,15 @@ type ProtocolConfig struct {
 	GovernancePhase         uint8            `json:"governance_phase"`
 	TotalContracts          uint64           `json:"total_contracts"`
 	TotalAgents             uint64           `json:"total_agents"`
+	ProtocolFeeSwornBps     uint16           `json:"protocol_fee_sworn_bps"`
+	ProtocolFeeSolBps       uint16           `json:"protocol_fee_sol_bps"`
+	MaxCorrections          uint8            `json:"max_corrections"`
+	DeadlineValidation      int64            `json:"deadline_validation"`
 	Bump                    uint8            `json:"bump"`
 }
 
 // ProtocolConfigSize is the on-chain size including Anchor discriminator.
-const ProtocolConfigSize = 133
+const ProtocolConfigSize = 146
 
 // DecodeProtocolConfig parses raw account data (including 8-byte discriminator).
 func DecodeProtocolConfig(data []byte) (*ProtocolConfig, error) {
@@ -169,7 +193,25 @@ func DecodeProtocolConfig(data []byte) (*ProtocolConfig, error) {
 	o += 8
 	c.TotalAgents = binary.LittleEndian.Uint64(data[o : o+8])
 	o += 8
-	c.Bump = data[o]
+	if o+2 <= len(data) {
+		c.ProtocolFeeSwornBps = binary.LittleEndian.Uint16(data[o : o+2])
+		o += 2
+	}
+	if o+2 <= len(data) {
+		c.ProtocolFeeSolBps = binary.LittleEndian.Uint16(data[o : o+2])
+		o += 2
+	}
+	if o < len(data) {
+		c.MaxCorrections = data[o]
+		o++
+	}
+	if o+8 <= len(data) {
+		c.DeadlineValidation = int64(binary.LittleEndian.Uint64(data[o : o+8]))
+		o += 8
+	}
+	if o < len(data) {
+		c.Bump = data[o]
+	}
 	return c, nil
 }
 
@@ -234,6 +276,7 @@ type Contract struct {
 	ProposalExpiresAt     int64            `json:"proposal_expires_at"`
 	ProviderStakeRequired uint64           `json:"provider_stake_required"`
 	Currency              Currency         `json:"currency"`
+	EscrowFactorBps       uint16           `json:"escrow_factor_bps"`
 }
 
 // DecodeContract parses raw account data (including 8-byte discriminator).
@@ -292,6 +335,10 @@ func DecodeContract(data []byte) (*Contract, error) {
 	}
 	if o < len(data) {
 		c.Currency = Currency(data[o])
+		o++
+	}
+	if o+2 <= len(data) {
+		c.EscrowFactorBps = binary.LittleEndian.Uint16(data[o : o+2])
 	}
 	return c, nil
 }

@@ -17,9 +17,10 @@ pub fn handler_propose(ctx: Context<ProposeContract>, value: u64, expiry_seconds
         _ => return Err(TrustError::InvalidCurrency.into()),
     };
 
-    // Validate provider is a registered, matured, non-banned agent
+    // Validate provider is a registered, matured, non-banned, non-hibernating agent
     require!(!provider_identity.banned, TrustError::AgentBanned);
     require!(provider_identity.matured, TrustError::IdentityNotMatured);
+    require!(!provider_identity.is_hibernating, TrustError::AgentHibernating);
 
     // Calculate the stake the provider will need to deposit on accept
     let stake_factor = calculate_stake_factor(

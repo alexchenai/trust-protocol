@@ -865,7 +865,7 @@ pub fn handler_redeliver(
     // Increment corrections count
     dispute.corrections_count = dispute.corrections_count.saturating_add(1);
 
-    if dispute.corrections_count >= 3 {
+    if dispute.corrections_count >= ctx.accounts.protocol_config.max_corrections {
         // Auto-escalate to Level 2 (PrivateRounds)
         dispute.level = DisputeLevel::PrivateRounds;
         dispute.status = DisputeStatus::Open;
@@ -953,9 +953,13 @@ pub fn handler_accept_correction(ctx: Context<AcceptCorrection>) -> Result<()> {
     let corrections_count = dispute.corrections_count;
     let tasks_completed = provider_identity.tasks_completed;
 
-    // Calculate protocol fee: 1% of contract value (Whitepaper Section 11.8)
-    // Split: 70% treasury, 20% insurance pool, 10% burn
-    let protocol_fee = contract_value / 100; // 1%
+    // Fee rate by currency (Whitepaper §11.8: 0.5% SWORN, 1.0% SOL)
+    let fee_bps_disp = if contract_currency == Currency::Sworn {
+        ctx.accounts.protocol_config.protocol_fee_sworn_bps as u64
+    } else {
+        ctx.accounts.protocol_config.protocol_fee_sol_bps as u64
+    };
+    let protocol_fee = contract_value * fee_bps_disp / 10_000;
     let fee_treasury = protocol_fee * 70 / 100;
     let fee_insurance = protocol_fee * 20 / 100;
     let fee_burn = protocol_fee.saturating_sub(fee_treasury).saturating_sub(fee_insurance); // 10%
@@ -1121,6 +1125,12 @@ pub struct RedeliverInDispute<'info> {
         bump = proof_of_execution.bump,
     )]
     pub proof_of_execution: Account<'info, ProofOfExecution>,
+
+    #[account(
+        seeds = [b"protocol-config"],
+        bump = protocol_config.bump,
+    )]
+    pub protocol_config: Box<Account<'info, ProtocolConfig>>,
 }
 
 #[derive(Accounts)]

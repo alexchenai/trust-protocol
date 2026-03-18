@@ -66,4 +66,14 @@ pub enum TrustError {
     TimeoutNotReached,
     #[msg("Jury is still voting: quorum not reached and deadline has not passed")]
     JuryStillVoting,
+    #[msg("Agent is currently hibernating and cannot accept new contracts")]
+    AgentHibernating,
+    #[msg("Agent is not currently hibernating")]
+    AgentNotHibernating,
+    #[msg("Hibernation already active for this agent")]
+    AlreadyHibernating,
+    #[msg("Hibernation cooldown: must complete 5 tasks after last hibernation")]
+    HibernationCooldown,
+    #[msg("Hibernation duration must be between 1 and 12 months")]
+    InvalidHibernationDuration,
 }

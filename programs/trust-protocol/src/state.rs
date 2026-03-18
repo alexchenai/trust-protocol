@@ -42,6 +42,14 @@ pub struct AgentIdentity {
     pub sponsor_bonus: u16,
     /// Whether identity is permanently banned (fraud)
     pub banned: bool,
+    /// Hibernation state: 0 = active, 1 = hibernating (Whitepaper §8.6)
+    pub is_hibernating: bool,
+    /// Timestamp when hibernation started (0 if not hibernating)
+    pub hibernation_started_at: i64,
+    /// Timestamp when hibernation ends (0 if not hibernating)
+    pub hibernation_ends_at: i64,
+    /// Tasks completed since last hibernation ended (cooldown = 5 tasks, Whitepaper §8.6)
+    pub tasks_since_last_hibernation: u32,
     /// Bump seed for PDA derivation
     pub bump: u8,
 }
@@ -86,6 +94,10 @@ pub struct Contract {
     /// Currency denomination: SWORN (SPL token) or SOL (native lamports)
     /// Whitepaper Section 11.8b: contracts can be denominated in SOL or SWORN
     pub currency: Currency,
+    /// Escrow factor in basis points (Whitepaper §7.7: reduced escrow for experienced requesters)
+    /// escrow_factor(ts) = max(0.30, 1.0 - 0.70*(ts/100)^1.5)
+    /// 10000 = 100% (full escrow — new requester, TS=0), 3000 = 30% (TS=100 minimum floor)
+    pub escrow_factor_bps: u16,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq, InitSpace)]
@@ -280,7 +292,7 @@ pub struct ProtocolConfig {
     pub min_identity_bond: u64,
     /// Maximum identity bond (5 SWORN in lamports)
     pub max_identity_bond: u64,
-    /// Identity maturation period in seconds (30 days = 2592000)
+    /// Identity maturation period in seconds (14 days = 1_209_600 — Whitepaper §10.2)
     pub maturation_period: i64,
     /// Minimum stake factor at TrustScore 100 (500 = 5.00%)
     pub min_stake_factor_bps: u16,
@@ -302,6 +314,17 @@ pub struct ProtocolConfig {
     pub total_contracts: u64,
     /// Total agents registered
     pub total_agents: u64,
+    /// Protocol fee rate for SWORN-denominated contracts in bps (50 = 0.5%)
+    /// Whitepaper §11.8: SWORN fee < SOL fee to incentivise SWORN adoption
+    pub protocol_fee_sworn_bps: u16,
+    /// Protocol fee rate for SOL-denominated contracts in bps (100 = 1.0%)
+    pub protocol_fee_sol_bps: u16,
+    /// Max corrections before auto-escalating to Level 2 dispute (default: 3)
+    /// Whitepaper §12.4.1: governable, range 1-10
+    pub max_corrections: u8,
+    /// Requester validation timeout in seconds (default: 72h = 259200)
+    /// Whitepaper §7.5 / §12.4.1: deadline_validation, range 24h-168h
+    pub deadline_validation: i64,
     /// Bump seed
     pub bump: u8,
 }

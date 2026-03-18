@@ -27,6 +27,28 @@ pub(crate) fn calculate_stake_factor(trust_score: u16, min_bps: u16, _max_bps: u
     factor as u16
 }
 
+/// Calculate escrow factor for requester based on their TrustScore.
+/// Whitepaper §7.7: escrow_factor(ts) = max(0.30, 1.0 - 0.70*(ts/100)^1.5)
+/// Returns basis points (10000 = 100%, 3000 = 30% floor).
+/// New requesters (TS=0) always deposit 100%. Experienced requesters pay less.
+pub(crate) fn calculate_escrow_factor(trust_score: u16) -> u16 {
+    if trust_score == 0 {
+        return 10_000; // 100% — no history, full escrow required
+    }
+    if trust_score >= 100 {
+        return 3_000; // 30% floor (minimum, even for perfect score)
+    }
+    // escrow_factor = 1.0 - 0.70 * (ts/100)^1.5
+    // Integer approximation: reduction = 7000 * sqrt(ts^3) / 1000
+    let ts = trust_score as u64;
+    let ts_cubed = ts * ts * ts;
+    let sqrt_ts_cubed = integer_sqrt(ts_cubed);
+    let reduction = (7_000u64 * sqrt_ts_cubed) / 1_000;
+    let factor = 10_000u64.saturating_sub(reduction);
+    let factor = factor.max(3_000); // 30% floor
+    factor as u16
+}
+
 /// Integer square root (Newton's method).
 pub(crate) fn integer_sqrt(n: u64) -> u64 {
     if n == 0 {
@@ -51,6 +73,7 @@ pub fn handler_create(ctx: Context<CreateContract>, value: u64, currency: u8) ->
 
     require!(!provider_identity.banned, TrustError::AgentBanned);
     require!(provider_identity.matured, TrustError::IdentityNotMatured);
+    require!(!provider_identity.is_hibernating, TrustError::AgentHibernating);
 
     // Exposure limit check (Whitepaper Section 7.3)
     // max_contracts = floor(TrustScore / 10) + 1
@@ -69,10 +92,19 @@ pub fn handler_create(ctx: Context<CreateContract>, value: u64, currency: u8) ->
     ctx.accounts.provider_identity.active_contracts =
         ctx.accounts.provider_identity.active_contracts.saturating_add(1);
 
-    // Calculate required stake
+    // Calculate required provider stake (Whitepaper §7.2)
     let stake_factor = calculate_stake_factor(ts, min_bps, max_bps);
     let stake_required = (value as u128)
         .checked_mul(stake_factor as u128)
+        .ok_or(TrustError::MathOverflow)?
+        / 10_000;
+
+    // Calculate requester escrow factor from requester TrustScore (Whitepaper §7.7)
+    // New requesters (TS=0) deposit 100%; experienced requesters deposit less (floor 30%)
+    let requester_ts = ctx.accounts.requester_identity.trust_score;
+    let escrow_factor = calculate_escrow_factor(requester_ts);
+    let escrow_deposit = (value as u128)
+        .checked_mul(escrow_factor as u128)
         .ok_or(TrustError::MathOverflow)?
         / 10_000;
     let stake_required = stake_required as u64;
@@ -89,6 +121,7 @@ pub fn handler_create(ctx: Context<CreateContract>, value: u64, currency: u8) ->
     token::transfer(transfer_ctx, stake_required)?;
 
     // Transfer contract value from requester
+    // Transfer partial escrow from requester (§7.7: reduced by TrustScore, floor 30%)
     let transfer_ctx = CpiContext::new(
         ctx.accounts.token_program.to_account_info(),
         Transfer {
@@ -97,7 +130,7 @@ pub fn handler_create(ctx: Context<CreateContract>, value: u64, currency: u8) ->
             authority: ctx.accounts.requester.to_account_info(),
         },
     );
-    token::transfer(transfer_ctx, value)?;
+    token::transfer(transfer_ctx, escrow_deposit as u64)?;
 
     // Create contract
     let contract_id = ctx.accounts.protocol_config.total_contracts;
@@ -118,6 +151,7 @@ pub fn handler_create(ctx: Context<CreateContract>, value: u64, currency: u8) ->
     contract.proposal_expires_at = 0;
     contract.provider_stake_required = 0;
     // Parse currency parameter — GAP-7 fix: allow SOL denomination
+    contract.escrow_factor_bps = escrow_factor; // §7.7: stored for payout reference
     contract.currency = match currency {
         1 => Currency::Sol,
         _ => Currency::Sworn, // 0 or any unknown = SWORN (safe default)
@@ -183,7 +217,7 @@ pub fn handler_deliver(
 }
 
 /// Requester accepts deliverable. Releases payment + returns provider stake.
-/// Deducts 1% protocol fee (70% treasury / 20% insurance / 10% burn).
+/// Deducts 0.5% (SWORN contracts) or 1.0% (SOL contracts) protocol fee (70% treasury / 20% insurance / 10% burn).
 /// Whitepaper Section 11.8: fee deducted at accept_contract.
 pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
     let contract = &mut ctx.accounts.contract;
@@ -209,6 +243,9 @@ pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
     provider_identity.tasks_completed = provider_identity.tasks_completed.saturating_add(1);
     provider_identity.last_task_completed_at = now;
     provider_identity.active_contracts = provider_identity.active_contracts.saturating_sub(1);
+    // Hibernation cooldown counter: count tasks completed since last hibernation (§8.6)
+    provider_identity.tasks_since_last_hibernation =
+        provider_identity.tasks_since_last_hibernation.saturating_add(1);
     // Track volume separately by currency (Whitepaper: volume_factor uses SWORN-equivalent)
     if contract.currency == Currency::Sol {
         provider_identity.volume_sol = provider_identity.volume_sol.saturating_add(contract.value);
@@ -224,9 +261,14 @@ pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
     let contract_id_val = contract.id;
     let tasks_completed = provider_identity.tasks_completed;
 
-    // Calculate protocol fee: 1% of contract value (Whitepaper Section 11.8)
-    // Split: 70% treasury, 20% insurance pool, 10% burn
-    let protocol_fee = contract_value / 100; // 1%
+    // Calculate protocol fee: 0.5% for SWORN contracts, 1.0% for SOL (Whitepaper §11.8)
+    // SWORN fee < SOL fee incentivises organic migration to SWORN. Split: 70/20/10.
+    let fee_bps = if contract_currency == Currency::Sworn {
+        ctx.accounts.protocol_config.protocol_fee_sworn_bps as u64 // 50 bps = 0.5%
+    } else {
+        ctx.accounts.protocol_config.protocol_fee_sol_bps as u64   // 100 bps = 1.0%
+    };
+    let protocol_fee = contract_value * fee_bps / 10_000;
     let fee_treasury = protocol_fee * 70 / 100;
     let fee_insurance = protocol_fee * 20 / 100;
     let fee_burn = protocol_fee.saturating_sub(fee_treasury).saturating_sub(fee_insurance); // 10%
@@ -374,6 +416,13 @@ pub struct CreateContract<'info> {
         bump = provider_identity.bump,
     )]
     pub provider_identity: Box<Account<'info, AgentIdentity>>,
+
+    /// Requester identity — used to calculate escrow_factor (Whitepaper §7.7)
+    #[account(
+        seeds = [b"agent-identity" as &[u8], requester.key().as_ref()],
+        bump = requester_identity.bump,
+    )]
+    pub requester_identity: Box<Account<'info, AgentIdentity>>,
 
     #[account(
         init,
@@ -745,10 +794,10 @@ pub fn handler_timeout_delivery(ctx: Context<TimeoutDelivery>) -> Result<()> {
         TrustError::InvalidContractStatus
     );
 
-    // 72-hour validation deadline measured from delivery (poe.submitted_at)
-    const VALIDATION_TIMEOUT: i64 = 72 * 3600;
+    // Requester validation timeout from config (default 72h — Whitepaper §7.5 / §12.4.1)
+    let validation_timeout: i64 = ctx.accounts.protocol_config.deadline_validation;
     require!(
-        now > ctx.accounts.proof_of_execution.submitted_at + VALIDATION_TIMEOUT,
+        now > ctx.accounts.proof_of_execution.submitted_at + validation_timeout,
         TrustError::TimeoutNotReached
     );
 
@@ -758,7 +807,13 @@ pub fn handler_timeout_delivery(ctx: Context<TimeoutDelivery>) -> Result<()> {
     let contract_currency = contract.currency;
 
     // Protocol fee: 1% (same as accept_contract — Whitepaper Section 11.8)
-    let protocol_fee = contract_value / 100;
+    // Fee rate by currency (Whitepaper §11.8: 0.5% SWORN, 1.0% SOL)
+    let fee_bps_td = if contract_currency == Currency::Sworn {
+        ctx.accounts.protocol_config.protocol_fee_sworn_bps as u64
+    } else {
+        ctx.accounts.protocol_config.protocol_fee_sol_bps as u64
+    };
+    let protocol_fee = contract_value * fee_bps_td / 10_000;
     let fee_treasury = protocol_fee * 70 / 100;
     let fee_insurance = protocol_fee * 20 / 100;
     let fee_burn = protocol_fee.saturating_sub(fee_treasury).saturating_sub(fee_insurance);
@@ -783,6 +838,9 @@ pub fn handler_timeout_delivery(ctx: Context<TimeoutDelivery>) -> Result<()> {
         provider.tasks_completed = provider.tasks_completed.saturating_add(1);
         provider.last_task_completed_at = now;
         provider.active_contracts = provider.active_contracts.saturating_sub(1);
+        // Hibernation cooldown counter (§8.6)
+        provider.tasks_since_last_hibernation =
+            provider.tasks_since_last_hibernation.saturating_add(1);
         if contract_currency == Currency::Sol {
             provider.volume_sol = provider.volume_sol.saturating_add(contract_value);
         } else {

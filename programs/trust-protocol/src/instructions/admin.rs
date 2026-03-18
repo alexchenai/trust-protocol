@@ -346,10 +346,11 @@ pub fn handler_update_config(ctx: Context<UpdateConfig>, params: UpdateConfigPar
     if let Some(v) = params.min_identity_bond { config.min_identity_bond = v; }
     if let Some(v) = params.max_identity_bond { config.max_identity_bond = v; }
     if let Some(v) = params.maturation_period  { config.maturation_period = v; }
-    msg!(
-        "ProtocolConfig updated: min_bond={} max_bond={} maturation_period={}",
-        config.min_identity_bond, config.max_identity_bond, config.maturation_period
-    );
+    if let Some(v) = params.protocol_fee_sworn_bps { config.protocol_fee_sworn_bps = v; }
+    if let Some(v) = params.protocol_fee_sol_bps   { config.protocol_fee_sol_bps = v; }
+    if let Some(v) = params.max_corrections        { config.max_corrections = v; }
+    if let Some(v) = params.deadline_validation    { config.deadline_validation = v; }
+    msg!("ProtocolConfig updated");
     Ok(())
 }
 
@@ -361,6 +362,14 @@ pub struct UpdateConfigParams {
     pub max_identity_bond: Option<u64>,
     /// New maturation period in seconds. None = no change.
     pub maturation_period: Option<i64>,
+    /// Protocol fee SWORN bps (10-300). Whitepaper sect 11.8.
+    pub protocol_fee_sworn_bps: Option<u16>,
+    /// Protocol fee SOL bps (10-300). Must stay > sworn fee.
+    pub protocol_fee_sol_bps: Option<u16>,
+    /// Max corrections before L2 escalation (1-10). sect 12.4.1.
+    pub max_corrections: Option<u8>,
+    /// Requester validation timeout seconds (86400-604800). sect 7.5.
+    pub deadline_validation: Option<i64>,
 }
 
 #[derive(Accounts)]

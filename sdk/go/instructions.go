@@ -1058,3 +1058,63 @@ func NewTimeoutDeliveryInstruction(
 		DataBytes: disc[:],
 	}
 }
+
+
+// ---------------------------------------------------------------------------
+// hibernate_agent — Whitepaper §8.6: Declared hibernation
+// ---------------------------------------------------------------------------
+
+// NewHibernateAgentInstruction builds the hibernate_agent instruction.
+// durationMonths: 1-12 months of hibernation. Reduced decay (0.5/month) during this period.
+func NewHibernateAgentInstruction(
+	programID solana.PublicKey,
+	agent solana.PublicKey,
+	agentIdentityPDA solana.PublicKey,
+	durationMonths uint8,
+) solana.Instruction {
+	disc := AnchorDiscriminator("hibernate_agent")
+	data := append(disc[:], durationMonths)
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(agent).SIGNER().WRITE(),
+			solana.Meta(agentIdentityPDA).WRITE(),
+		},
+		DataBytes: data,
+	}
+}
+
+// NewWakeAgentInstruction builds the wake_agent instruction (early exit from hibernation).
+func NewWakeAgentInstruction(
+	programID solana.PublicKey,
+	agent solana.PublicKey,
+	agentIdentityPDA solana.PublicKey,
+) solana.Instruction {
+	disc := AnchorDiscriminator("wake_agent")
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(agent).SIGNER().WRITE(),
+			solana.Meta(agentIdentityPDA).WRITE(),
+		},
+		DataBytes: disc[:],
+	}
+}
+
+// NewExpireHibernationInstruction builds the expire_hibernation instruction (permissionless).
+// Can be called by anyone once hibernation max duration has passed.
+func NewExpireHibernationInstruction(
+	programID solana.PublicKey,
+	caller solana.PublicKey,
+	agentIdentityPDA solana.PublicKey,
+) solana.Instruction {
+	disc := AnchorDiscriminator("expire_hibernation")
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(caller).SIGNER().WRITE(),
+			solana.Meta(agentIdentityPDA).WRITE(),
+		},
+		DataBytes: disc[:],
+	}
+}

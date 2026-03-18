@@ -11,7 +11,7 @@ pub mod state;
 
 use instructions::*;
 
-declare_id!("CSBAc1SiMALr4rnuCoB17BsddzthB4RAhjibGvyt6p6S");
+declare_id!("BqYfaHk3PBq8M54R3iJJXfJSa4Kndx369zQohkG3x3pB");
 
 #[program]
 pub mod trust_protocol {
@@ -50,6 +50,25 @@ pub mod trust_protocol {
     /// sol_to_sworn_rate: SOL lamport to SWORN lamport exchange rate for volume normalization.
     pub fn calculate_trust_score(ctx: Context<CalculateTrustScore>, sol_to_sworn_rate: u64) -> Result<()> {
         identity::handler_calculate_trust_score(ctx, sol_to_sworn_rate)
+    }
+
+    // === Hibernation (Whitepaper §8.6: Declared hibernation for seasonal agents) ===
+
+    /// Declare hibernation: reduced decay (0.5/month) for up to 12 months.
+    /// Must be called BEFORE going inactive. Requires 5-task cooldown between hibernations.
+    pub fn hibernate_agent(ctx: Context<HibernateAgent>, duration_months: u8) -> Result<()> {
+        identity::handler_hibernate(ctx, duration_months)
+    }
+
+    /// Wake from hibernation early (or can be called by anyone after expiry via expire_hibernation).
+    pub fn wake_agent(ctx: Context<WakeAgent>) -> Result<()> {
+        identity::handler_wake(ctx)
+    }
+
+    /// Permissionless: expire hibernation once max duration has passed.
+    /// Resets hibernation state so standard decay resumes automatically.
+    pub fn expire_hibernation(ctx: Context<WakeAgent>) -> Result<()> {
+        identity::handler_expire_hibernation(ctx)
     }
 
     // === Contract Lifecycle (Whitepaper Section 3: Dynamic Staking) ===
