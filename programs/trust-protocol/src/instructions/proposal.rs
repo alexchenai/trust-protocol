@@ -34,13 +34,22 @@ pub fn handler_propose(ctx: Context<ProposeContract>, value: u64, expiry_seconds
         / 10_000;
     let stake_required = stake_required as u64;
 
-    // Transfer contract value from requester to escrow
+    // Calculate requester escrow deposit using reduced escrow factor (Whitepaper §7.7)
+    let requester_ts = ctx.accounts.requester_identity.trust_score;
+    let escrow_factor = crate::instructions::contract::calculate_escrow_factor(requester_ts);
+    let escrow_deposit = (value as u128)
+        .checked_mul(escrow_factor as u128)
+        .ok_or(TrustError::MathOverflow)?
+        / 10_000;
+    let escrow_deposit = escrow_deposit as u64;
+
+    // Transfer reduced escrow from requester (Whitepaper §7.7)
     if currency_enum == Currency::Sol {
         // SOL escrow: transfer lamports from requester to the contract PDA
         let ix = anchor_lang::solana_program::system_instruction::transfer(
             &ctx.accounts.requester.key(),
             &ctx.accounts.contract.to_account_info().key,
-            value,
+            escrow_deposit,
         );
         anchor_lang::solana_program::program::invoke(
             &ix,
@@ -60,7 +69,7 @@ pub fn handler_propose(ctx: Context<ProposeContract>, value: u64, expiry_seconds
                 authority: ctx.accounts.requester.to_account_info(),
             },
         );
-        token::transfer(transfer_ctx, value)?;
+        token::transfer(transfer_ctx, escrow_deposit)?;
     }
 
     // Initialize contract in Proposed state
@@ -87,6 +96,8 @@ pub fn handler_propose(ctx: Context<ProposeContract>, value: u64, expiry_seconds
     };
     contract.provider_stake_required = stake_required;
     contract.currency = currency_enum;
+    // Store escrow factor (Whitepaper §7.7) — already computed above
+    contract.escrow_factor_bps = escrow_factor;
 
     // Increment contract counter
     let config = &mut ctx.accounts.protocol_config;
@@ -199,7 +210,12 @@ pub fn handler_cancel_proposal(ctx: Context<CancelProposal>) -> Result<()> {
     let contract_status = ctx.accounts.contract.status;
     let contract_requester = ctx.accounts.contract.requester;
     let _contract_expires = ctx.accounts.contract.proposal_expires_at;
-    let refund_value = ctx.accounts.contract.value;
+    // Refund the actual escrowed amount, not the full value (Whitepaper §7.7)
+    let refund_value = (ctx.accounts.contract.value as u128)
+        .checked_mul(ctx.accounts.contract.escrow_factor_bps as u128)
+        .unwrap_or(ctx.accounts.contract.value as u128)
+        / 10_000;
+    let refund_value = refund_value as u64;
     let is_sol = ctx.accounts.contract.currency == Currency::Sol;
     let contract_id = ctx.accounts.contract.id;
 
@@ -270,6 +286,13 @@ pub struct ProposeContract<'info> {
         bump = provider_identity.bump,
     )]
     pub provider_identity: Account<'info, AgentIdentity>,
+
+    /// Requester identity — used to calculate escrow_factor (Whitepaper §7.7)
+    #[account(
+        seeds = [b"agent-identity" as &[u8], requester.key().as_ref()],
+        bump = requester_identity.bump,
+    )]
+    pub requester_identity: Account<'info, AgentIdentity>,
 
     #[account(
         init,

@@ -272,8 +272,9 @@ pub fn handler_vote(ctx: Context<JuryVote>, vote_for_provider: bool) -> Result<(
         dispute.status == DisputeStatus::Open || dispute.status == DisputeStatus::Voting,
         TrustError::InvalidContractStatus
     );
+    // Whitepaper §12.4.1: "Minimum TrustScore for validator: 70" => >= 70
     require!(
-        juror_identity.trust_score > 70,
+        juror_identity.trust_score >= 70,
         TrustError::InsufficientJuryReputation
     );
     require!(!juror_identity.banned, TrustError::AgentBanned);
@@ -385,7 +386,11 @@ pub fn handler_resolve(ctx: Context<ResolveDispute>, provider_wins: bool) -> Res
             ctx.accounts.dispute.status = DisputeStatus::ResolvedProvider;
             ctx.accounts.contract.status = ContractStatus::ResolvedProvider;
 
-            let total = ctx.accounts.contract.value
+            // Release escrowed amount (not full value) + stake (Whitepaper §7.7)
+            let ef_pw = ctx.accounts.contract.escrow_factor_bps;
+            let ef_pw = if ef_pw > 0 { ef_pw } else { 10_000u16 };
+            let escrow_pw = (ctx.accounts.contract.value as u128 * ef_pw as u128 / 10_000) as u64;
+            let total = escrow_pw
                 .checked_add(ctx.accounts.contract.provider_stake)
                 .ok_or(TrustError::MathOverflow)?;
 
@@ -404,6 +409,9 @@ pub fn handler_resolve(ctx: Context<ResolveDispute>, provider_wins: bool) -> Res
 
             let confiscated = ctx.accounts.contract.provider_stake;
             let contract_value = ctx.accounts.contract.value;
+            let escrow_factor_dr = ctx.accounts.contract.escrow_factor_bps;
+            let ef = if escrow_factor_dr > 0 { escrow_factor_dr } else { 10_000u16 };
+            let escrow_deposit_dr = (contract_value as u128 * ef as u128 / 10_000) as u64;
             let burn_rate_bps = ctx.accounts.protocol_config.burn_rate_bps;
             let insurance_rate_bps = ctx.accounts.protocol_config.insurance_rate_bps;
             let burn_amount = (confiscated as u128 * burn_rate_bps as u128 / 10_000) as u64;
@@ -412,7 +420,8 @@ pub fn handler_resolve(ctx: Context<ResolveDispute>, provider_wins: bool) -> Res
 
             // For SOL: burn portion goes to insurance (can't burn SOL)
             let total_insurance = insurance_amount.checked_add(burn_amount).ok_or(TrustError::MathOverflow)?;
-            let refund = contract_value.checked_add(winner_amount).ok_or(TrustError::MathOverflow)?;
+            // Refund escrowed amount (not full value) + confiscation bonus (Whitepaper §7.7)
+            let refund = escrow_deposit_dr.checked_add(winner_amount).ok_or(TrustError::MathOverflow)?;
 
             let contract_info = ctx.accounts.contract.to_account_info();
             let requester_info = ctx.accounts.requester_token_account.to_account_info();
@@ -438,7 +447,11 @@ pub fn handler_resolve(ctx: Context<ResolveDispute>, provider_wins: bool) -> Res
             ctx.accounts.dispute.status = DisputeStatus::ResolvedProvider;
             ctx.accounts.contract.status = ContractStatus::ResolvedProvider;
 
-            let total = ctx.accounts.contract.value
+            // Release escrowed amount (not full value) + stake (Whitepaper §7.7)
+            let ef_sw = ctx.accounts.contract.escrow_factor_bps;
+            let ef_sw = if ef_sw > 0 { ef_sw } else { 10_000u16 };
+            let escrow_sw = (ctx.accounts.contract.value as u128 * ef_sw as u128 / 10_000) as u64;
+            let total = escrow_sw
                 .checked_add(ctx.accounts.contract.provider_stake)
                 .ok_or(TrustError::MathOverflow)?;
 
@@ -463,13 +476,17 @@ pub fn handler_resolve(ctx: Context<ResolveDispute>, provider_wins: bool) -> Res
 
             let confiscated = ctx.accounts.contract.provider_stake;
             let contract_value = ctx.accounts.contract.value;
+            let escrow_factor_ds = ctx.accounts.contract.escrow_factor_bps;
+            let ef_ds = if escrow_factor_ds > 0 { escrow_factor_ds } else { 10_000u16 };
+            let escrow_deposit_ds = (contract_value as u128 * ef_ds as u128 / 10_000) as u64;
             let burn_rate_bps = ctx.accounts.protocol_config.burn_rate_bps;
             let insurance_rate_bps = ctx.accounts.protocol_config.insurance_rate_bps;
             let burn_amount = (confiscated as u128 * burn_rate_bps as u128 / 10_000) as u64;
             let insurance_amount = (confiscated as u128 * insurance_rate_bps as u128 / 10_000) as u64;
             let winner_amount = confiscated.saturating_sub(burn_amount).saturating_sub(insurance_amount);
 
-            let refund = contract_value.checked_add(winner_amount).ok_or(TrustError::MathOverflow)?;
+            // Refund escrowed amount (not full value) + confiscation bonus (Whitepaper §7.7)
+            let refund = escrow_deposit_ds.checked_add(winner_amount).ok_or(TrustError::MathOverflow)?;
             token::transfer(
                 CpiContext::new_with_signer(
                     ctx.accounts.token_program.to_account_info(),
@@ -950,8 +967,13 @@ pub fn handler_accept_correction(ctx: Context<AcceptCorrection>) -> Result<()> {
     let contract_provider_stake = contract.provider_stake;
     let contract_currency = contract.currency;
     let contract_id_val = contract.id;
+    let contract_escrow_factor_bps_ac = contract.escrow_factor_bps;
     let corrections_count = dispute.corrections_count;
     let tasks_completed = provider_identity.tasks_completed;
+
+    // Compute escrowed amount (Whitepaper §7.7)
+    let ef_ac = if contract_escrow_factor_bps_ac > 0 { contract_escrow_factor_bps_ac } else { 10_000u16 };
+    let escrow_deposit_ac = (contract_value as u128 * ef_ac as u128 / 10_000) as u64;
 
     // Fee rate by currency (Whitepaper §11.8: 0.5% SWORN, 1.0% SOL)
     let fee_bps_disp = if contract_currency == Currency::Sworn {
@@ -959,13 +981,13 @@ pub fn handler_accept_correction(ctx: Context<AcceptCorrection>) -> Result<()> {
     } else {
         ctx.accounts.protocol_config.protocol_fee_sol_bps as u64
     };
-    let protocol_fee = contract_value * fee_bps_disp / 10_000;
+    let protocol_fee = escrow_deposit_ac * fee_bps_disp / 10_000;
     let fee_treasury = protocol_fee * 70 / 100;
     let fee_insurance = protocol_fee * 20 / 100;
     let fee_burn = protocol_fee.saturating_sub(fee_treasury).saturating_sub(fee_insurance); // 10%
 
-    // Net payment to provider = contract value - protocol fee + stake return
-    let net_payment = contract_value.saturating_sub(protocol_fee);
+    // Net payment to provider = escrowed amount - protocol fee + stake return (Whitepaper §7.7)
+    let net_payment = escrow_deposit_ac.saturating_sub(protocol_fee);
     let provider_release = net_payment
         .checked_add(contract_provider_stake)
         .ok_or(TrustError::MathOverflow)?;

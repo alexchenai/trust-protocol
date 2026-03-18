@@ -259,6 +259,7 @@ pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
     let contract_provider_stake = contract.provider_stake;
     let contract_currency = contract.currency;
     let contract_id_val = contract.id;
+    let contract_escrow_factor_bps = contract.escrow_factor_bps;
     let tasks_completed = provider_identity.tasks_completed;
 
     // Calculate protocol fee: 0.5% for SWORN contracts, 1.0% for SOL (Whitepaper §11.8)
@@ -273,8 +274,15 @@ pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
     let fee_insurance = protocol_fee * 20 / 100;
     let fee_burn = protocol_fee.saturating_sub(fee_treasury).saturating_sub(fee_insurance); // 10%
 
-    // Net payment to provider = contract value - protocol fee + stake return
-    let net_payment = contract_value.saturating_sub(protocol_fee);
+    // Net payment to provider = escrowed amount - protocol fee + stake return
+    // Whitepaper §7.7: requester may deposit partial escrow; provider receives what was escrowed
+    let escrow_factor = if contract_escrow_factor_bps > 0 { contract_escrow_factor_bps } else { 10_000u16 };
+    let escrow_deposit = (contract_value as u128)
+        .checked_mul(escrow_factor as u128)
+        .ok_or(TrustError::MathOverflow)?
+        / 10_000;
+    let escrow_deposit = escrow_deposit as u64;
+    let net_payment = escrow_deposit.saturating_sub(protocol_fee);
     let provider_release = net_payment
         .checked_add(contract_provider_stake)
         .ok_or(TrustError::MathOverflow)?;
@@ -491,10 +499,10 @@ pub fn handler_timeout(
         TrustError::InvalidContractStatus
     );
 
-    // 72-hour delivery deadline
-    const TIMEOUT_SECONDS: i64 = 72 * 3600;
+    // Delivery deadline from config (default 72h — Whitepaper §7.5 / §12.4.1)
+    let timeout_seconds = ctx.accounts.protocol_config.deadline_validation;
     require!(
-        now > contract.created_at + TIMEOUT_SECONDS,
+        now > contract.created_at + timeout_seconds,
         TrustError::TimeoutNotReached
     );
 
@@ -502,8 +510,13 @@ pub fn handler_timeout(
     let contract_value = contract.value;
     let provider_stake = contract.provider_stake;
     let contract_currency = contract.currency;
+    let contract_escrow_factor_bps_to = contract.escrow_factor_bps;
     let burn_rate_bps = ctx.accounts.protocol_config.burn_rate_bps;
     let insurance_rate_bps = ctx.accounts.protocol_config.insurance_rate_bps;
+
+    // Compute escrowed amount (Whitepaper §7.7)
+    let escrow_factor_to = if contract_escrow_factor_bps_to > 0 { contract_escrow_factor_bps_to } else { 10_000u16 };
+    let escrow_deposit_to = (contract_value as u128 * escrow_factor_to as u128 / 10_000) as u64;
 
     // Stake confiscation split: 15% burn, 60% insurance, 25% requester bonus
     let burn_amount = (provider_stake as u128 * burn_rate_bps as u128 / 10_000) as u64;
@@ -511,7 +524,8 @@ pub fn handler_timeout(
     let winner_amount = provider_stake
         .saturating_sub(burn_amount)
         .saturating_sub(insurance_amount);
-    let refund = contract_value
+    // Refund = escrowed amount (not full contract value) + 25% confiscation bonus
+    let refund = escrow_deposit_to
         .checked_add(winner_amount)
         .ok_or(TrustError::MathOverflow)?;
 
@@ -805,19 +819,22 @@ pub fn handler_timeout_delivery(ctx: Context<TimeoutDelivery>) -> Result<()> {
     let contract_value = contract.value;
     let contract_provider_stake = contract.provider_stake;
     let contract_currency = contract.currency;
+    let contract_escrow_factor_bps_td = contract.escrow_factor_bps;
 
-    // Protocol fee: 1% (same as accept_contract — Whitepaper Section 11.8)
-    // Fee rate by currency (Whitepaper §11.8: 0.5% SWORN, 1.0% SOL)
+    // Protocol fee (Whitepaper §11.8: 0.5% SWORN, 1.0% SOL)
     let fee_bps_td = if contract_currency == Currency::Sworn {
         ctx.accounts.protocol_config.protocol_fee_sworn_bps as u64
     } else {
         ctx.accounts.protocol_config.protocol_fee_sol_bps as u64
     };
-    let protocol_fee = contract_value * fee_bps_td / 10_000;
+    // Compute escrowed amount (Whitepaper §7.7: reduced escrow for experienced requesters)
+    let escrow_factor_td = if contract_escrow_factor_bps_td > 0 { contract_escrow_factor_bps_td } else { 10_000u16 };
+    let escrow_deposit_td = (contract_value as u128 * escrow_factor_td as u128 / 10_000) as u64;
+    let protocol_fee = escrow_deposit_td * fee_bps_td / 10_000;
     let fee_treasury = protocol_fee * 70 / 100;
     let fee_insurance = protocol_fee * 20 / 100;
     let fee_burn = protocol_fee.saturating_sub(fee_treasury).saturating_sub(fee_insurance);
-    let net_payment = contract_value.saturating_sub(protocol_fee);
+    let net_payment = escrow_deposit_td.saturating_sub(protocol_fee);
     let provider_release = net_payment
         .checked_add(contract_provider_stake)
         .ok_or(TrustError::MathOverflow)?;
