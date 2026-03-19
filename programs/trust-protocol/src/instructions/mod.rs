@@ -5,6 +5,7 @@ pub mod identity;
 pub mod initialize;
 pub mod insurance;
 pub mod proposal;
+pub mod work_rewards;
 
 pub use admin::*;
 pub use contract::*;
@@ -13,3 +14,4 @@ pub use identity::*;
 pub use initialize::*;
 pub use insurance::*;
 pub use proposal::*;
+pub use work_rewards::*;

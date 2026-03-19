@@ -127,7 +127,7 @@ pub mod trust_protocol {
         contract::handler_timeout_delivery(ctx)
     }
 
-    // === Dispute Resolution (Whitepaper Section 5) ===
+    // === Dispute Resolution (Whitepaper Section 9) ===
     // 4 levels: Direct Correction -> Private Rounds -> Public Jury -> Appeal
 
     /// Initiate dispute on a contract.
@@ -146,7 +146,7 @@ pub mod trust_protocol {
     }
 
     /// Escalate a Level 3 (PublicJury) dispute to Level 4 (Appeal).
-    /// Whitepaper Section 5.4: escalating party deposits 50% of contract value (double-or-nothing).
+    /// Whitepaper Section 9.5: escalating party deposits 50% of contract value (double-or-nothing).
     /// On win: deposit returned. On loss: deposit confiscated (60% insurance, 25% winner, 15% burn).
     /// Records depositor in dispute.initiator for correct refund/confiscation in resolve_dispute.
     pub fn escalate_to_appeal(ctx: Context<EscalateToAppeal>) -> Result<()> {
@@ -184,7 +184,7 @@ pub mod trust_protocol {
     /// Migrate Dispute accounts to include appeal_stake field (u64).
     /// Reallocs from 170 to 178 bytes. The new 8 bytes are zero-filled (appeal_stake=0).
     /// appeal_stake is populated by escalate_to_appeal when Level 4 is reached.
-    /// Whitepaper Section 5.4: double-or-nothing stake deposit by escalating party.
+    /// Whitepaper Section 9.5: double-or-nothing stake deposit by escalating party.
     /// Call once per old dispute. Idempotent for already-migrated accounts.
     pub fn migrate_dispute_appeal_stake(ctx: Context<MigrateDisputeAppealStake>) -> Result<()> {
         dispute::handler_migrate_dispute_appeal_stake(ctx)
@@ -209,6 +209,26 @@ pub mod trust_protocol {
     /// Deny insurance claim. Collateral forfeited as anti-spam.
     pub fn deny_insurance_claim(ctx: Context<ApproveInsuranceClaim>) -> Result<()> {
         insurance::handler_deny_claim(ctx)
+    }
+
+    /// Deposit tokens into the InsurancePool.
+    /// Whitepaper §11.5b: 60% of confiscations, 20% of protocol fees go to pool.
+    pub fn deposit_to_insurance_pool(ctx: Context<DepositToPool>, amount: u64) -> Result<()> {
+        insurance::handler_deposit_to_pool(ctx, amount)
+    }
+
+    /// Update InsurancePool total_active_exposure for solvency ratio calculation.
+    /// Whitepaper §11.5c: solvency_ratio = balance / exposure. Admin-only Phase 0-2.
+    pub fn update_insurance_exposure(ctx: Context<UpdateExposure>, new_exposure: u64) -> Result<()> {
+        insurance::handler_update_exposure(ctx, new_exposure)
+    }
+
+    // === Work Rewards (Whitepaper §11.3b) ===
+
+    /// Emit work reward for a completed task. Halving schedule: 10 SWORN base,
+    /// halves every 50,000 tasks. Converges to 1M SWORN total automatic emission.
+    pub fn emit_work_reward(ctx: Context<EmitWorkReward>) -> Result<()> {
+        work_rewards::handler_emit_work_reward(ctx)
     }
 
     // === Admin Operations ===

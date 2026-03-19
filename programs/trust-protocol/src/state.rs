@@ -102,6 +102,21 @@ pub struct Contract {
     /// escrow_factor(ts) = max(0.30, 1.0 - 0.70*(ts/100)^1.5)
     /// 10000 = 100% (full escrow — new requester, TS=0), 3000 = 30% (TS=100 minimum floor)
     pub escrow_factor_bps: u16,
+    /// SHA-256 hash of input specification (Whitepaper §6.1: spec_hash)
+    /// Set at contract creation. Used for dispute evidence and PoE verification.
+    pub spec_hash: [u8; 32],
+    /// Number of corrections used in the pre-dispute correction cycle (Whitepaper §6.2)
+    /// Range: 0..max_corrections_contract. When limit reached, auto-escalates to dispute.
+    pub corrections_used: u8,
+    /// Per-contract max corrections (Whitepaper §6.1: sla.max_corrections, default 3)
+    /// Copied from protocol_config.max_corrections at creation, but can be overridden.
+    pub max_corrections_contract: u8,
+    /// Per-contract validation deadline in seconds (Whitepaper §6.1: sla.deadline_validation)
+    /// Copied from protocol_config.deadline_validation at creation. Default 72h = 259200.
+    pub deadline_validation_contract: i64,
+    /// Contract visibility (Whitepaper §6.4: private or public)
+    /// 0 = Private (default), 1 = Public (enables bidding mechanism §6.5)
+    pub visibility: u8,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq, InitSpace)]
@@ -138,6 +153,9 @@ pub enum ContractStatus {
     ResolvedRequester,
     /// Proposed by requester, awaiting provider acceptance
     Proposed,
+    /// Requester rejected delivery and requested correction (Whitepaper §6.2)
+    /// Provider must re-deliver. If corrections_used >= max_corrections, auto-dispute.
+    CorrectionRequested,
 }
 
 /// Proof of Execution record (Whitepaper Section 1: PoE)
@@ -164,7 +182,7 @@ pub struct ProofOfExecution {
     pub bump: u8,
 }
 
-/// Dispute account (Whitepaper Section 5: Dispute Resolution)
+/// Dispute account (Whitepaper Section 9: Dispute Resolution)
 /// 4 levels: Direct Correction -> Private Rounds -> Public Jury -> Appeal
 #[account]
 #[derive(InitSpace)]
@@ -203,8 +221,13 @@ pub struct Dispute {
     /// Appeal stake deposited by escalating party (Level 4 only).
     /// On escalation to Appeal: escalating party deposits 50% of contract value.
     /// Losing party forfeits their appeal_stake (60% insurance, 25% winner, 15% burn).
-    /// Whitepaper Section 5.4: double-or-nothing with larger jury.
+    /// Whitepaper Section 9.5: double-or-nothing with larger jury.
     pub appeal_stake: u64,
+    /// Arbitration fee per party (2% of contract value, Whitepaper §9.4).
+    /// Both parties deposit this when escalating to Level 3 (PublicJury).
+    /// Winner recovers theirs; loser's fee is distributed to jury validators.
+    /// Stored as the per-party amount (i.e., 2% of contract value).
+    pub arbitration_fee: u64,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace)]
@@ -349,7 +372,7 @@ pub struct ProtocolConfig {
     pub bump: u8,
 }
 
-/// Jury vote record (Whitepaper Section 5.3: Public Jury voting)
+/// Jury vote record (Whitepaper Section 9.4: Public Jury voting)
 /// One PDA per juror per dispute. Prevents double-voting.
 /// Seeds: [b"vote", dispute_key, juror_key]
 /// Initialized in handler_vote; existence proves the juror already voted.

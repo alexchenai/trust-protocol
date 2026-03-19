@@ -76,4 +76,8 @@ pub enum TrustError {
     HibernationCooldown,
     #[msg("Hibernation duration must be between 1 and 12 months")]
     InvalidHibernationDuration,
+    #[msg("Claim exceeds 5% of InsurancePool balance (§11.5b per-claim cap)")]
+    ClaimExceedsPoolCap,
+    #[msg("InsurancePool in crisis (solvency < 0.5): only proven fraud claims accepted (§11.5c)")]
+    InsurancePoolCrisis,
 }

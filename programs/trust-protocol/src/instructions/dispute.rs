@@ -5,7 +5,7 @@ use anchor_spl::token::{self, Burn, Token, Transfer};
 use anchor_lang::solana_program::pubkey::Pubkey;
 
 /// Initiate a dispute on a delivered contract.
-/// Whitepaper Section 5: Dispute Resolution - starts at Level 1 (Direct Correction).
+/// Whitepaper Section 9: Dispute Resolution - starts at Level 1 (Direct Correction).
 pub fn handler_initiate(ctx: Context<InitiateDispute>, evidence_hash: [u8; 32]) -> Result<()> {
     let contract = &mut ctx.accounts.contract;
     require!(
@@ -37,6 +37,7 @@ pub fn handler_initiate(ctx: Context<InitiateDispute>, evidence_hash: [u8; 32]) 
     dispute.bump = ctx.bumps.dispute;
     dispute.corrections_count = 0;
     dispute.private_rounds_count = 0;
+    dispute.arbitration_fee = 0;
 
     msg!(
         "Dispute initiated on contract #{}. Level: DirectCorrection. Deadline: {}",
@@ -79,7 +80,7 @@ pub fn handler_respond(ctx: Context<RespondDispute>, response_hash: [u8; 32]) ->
 /// Escalate dispute to the next level.
 /// Level 1 -> 2 (Private Rounds), 2 -> 3 (Public Jury).
 /// Level 3 -> 4 (Appeal) requires stake deposit: use escalate_to_appeal instead.
-/// Whitepaper Section 5.4: Appeal is double-or-nothing -- stake deposit is mandatory.
+/// Whitepaper Section 9.5: Appeal is double-or-nothing -- stake deposit is mandatory.
 pub fn handler_escalate(ctx: Context<EscalateDispute>) -> Result<()> {
     let dispute = &mut ctx.accounts.dispute;
     let now = Clock::get()?.unix_timestamp;
@@ -94,7 +95,7 @@ pub fn handler_escalate(ctx: Context<EscalateDispute>) -> Result<()> {
         DisputeLevel::DirectCorrection => DisputeLevel::PrivateRounds,
         DisputeLevel::PrivateRounds => DisputeLevel::PublicJury,
         // Level 3 -> 4 (Appeal) requires stake deposit via escalate_to_appeal instruction.
-        // Whitepaper Section 5.4: double-or-nothing stake is mandatory for Appeal level.
+        // Whitepaper Section 9.5: double-or-nothing stake is mandatory for Appeal level.
         DisputeLevel::PublicJury => return Err(TrustError::MaxDisputeLevel.into()),
         DisputeLevel::Appeal => return Err(TrustError::MaxDisputeLevel.into()),
     };
@@ -110,7 +111,7 @@ pub fn handler_escalate(ctx: Context<EscalateDispute>) -> Result<()> {
     dispute.status = DisputeStatus::Open;
     dispute.deadline = now + deadline_days * 86_400;
 
-    // Set jury size based on contract value (Whitepaper Section 5.3)
+    // Set jury size based on contract value (Whitepaper Section 9.4)
     // PublicJury: 3 (<100 SWORN units), 5 (100-1000), 7 (>1000)
     // Appeal: always 9 (larger independent jury)
     match dispute.level {
@@ -120,6 +121,13 @@ pub fn handler_escalate(ctx: Context<EscalateDispute>) -> Result<()> {
             dispute.jury_size = if contract_value < 100_000_000 { 3 }
                 else if contract_value < 1_000_000_000 { 5 }
                 else { 7 };
+            // Whitepaper §9.4: Both parties deposit arbitration fee = 2% of contract value each.
+            // Fee is tracked but not collected here (deducted from payouts at resolution).
+            // Loser forfeits their fee (distributed to jury); winner recovers theirs.
+            dispute.arbitration_fee = contract_value
+                .checked_mul(200)
+                .and_then(|v| v.checked_div(10_000))
+                .unwrap_or(0);
         }
         _ => {}
     }
@@ -141,7 +149,7 @@ pub fn handler_escalate(ctx: Context<EscalateDispute>) -> Result<()> {
 }
 
 /// Escalate a Level 3 (PublicJury) dispute to Level 4 (Appeal) with the required stake deposit.
-/// Whitepaper Section 5.4: double-or-nothing — escalating party deposits 50% of contract value.
+/// Whitepaper Section 9.5: double-or-nothing — escalating party deposits 50% of contract value.
 /// If the appeal is won: deposit returned to depositor.
 /// If the appeal is lost: deposit confiscated (60% insurance, 25% winner, 15% burn).
 ///
@@ -167,7 +175,7 @@ pub fn handler_escalate_to_appeal(ctx: Context<EscalateToAppeal>) -> Result<()> 
         TrustError::UnauthorizedRequester
     );
 
-    // 50% of contract value is the appeal stake (Whitepaper Section 5.4)
+    // 50% of contract value is the appeal stake (Whitepaper Section 9.5)
     let appeal_stake_amount = contract.value
         .checked_div(2)
         .ok_or(TrustError::MathOverflow)?;
@@ -218,7 +226,7 @@ pub fn handler_escalate_to_appeal(ctx: Context<EscalateToAppeal>) -> Result<()> 
     dispute.initiator = escalator_key;
     dispute.level = DisputeLevel::Appeal;
     dispute.status = DisputeStatus::Open;
-    dispute.jury_size = 9; // independent larger jury (Whitepaper Section 5.4)
+    dispute.jury_size = 9; // independent larger jury (Whitepaper Section 9.5)
     dispute.deadline = now + 10 * 86_400; // 10-day appeal window
     dispute.votes_provider = 0; // reset votes for new jury
     dispute.votes_requester = 0;
@@ -265,7 +273,7 @@ pub struct EscalateToAppeal<'info> {
 }
 
 /// Jury member casts vote (Public Jury / Appeal only).
-/// Whitepaper: Only agents with TrustScore > 70 can serve as jurors.
+/// Whitepaper §9.4: Only agents with TrustScore >= 70 can serve as jurors.
 /// Voting is weighted by reputation (validated via TrustScore check).
 pub fn handler_vote(ctx: Context<JuryVote>, vote_for_provider: bool) -> Result<()> {
     let dispute = &mut ctx.accounts.dispute;
@@ -303,7 +311,7 @@ pub fn handler_vote(ctx: Context<JuryVote>, vote_for_provider: bool) -> Result<(
     } else {
         dispute.votes_requester = dispute.votes_requester.saturating_add(1);
     }
-    // Whitepaper §5.3: Quorum = simple majority. Auto-close when reached.
+    // Whitepaper §9.4: Quorum = simple majority. Auto-close when reached.
     // jury_size=0 edge case: threshold becomes 1 (safe default).
     let majority_threshold = (dispute.jury_size as u16 / 2) + 1;
     let max_votes = dispute.votes_provider.max(dispute.votes_requester);
@@ -329,7 +337,7 @@ pub fn handler_vote(ctx: Context<JuryVote>, vote_for_provider: bool) -> Result<(
 /// Whitepaper: Confiscated stakes -> 15% burned, 60% insurance pool, 25% to winner.
 /// Fraud: complete capital confiscation + permanent TrustScore reset + ban.
 pub fn handler_resolve(ctx: Context<ResolveDispute>, provider_wins: bool) -> Result<()> {
-    // Whitepaper §5.3: Jury disputes are permissionless once quorum reached or deadline passed.
+    // Whitepaper §9.4: Jury disputes are permissionless once quorum reached or deadline passed.
     // L1/L2 disputes require admin authorization.
     let final_provider_wins = {
         let dispute = &ctx.accounts.dispute;
@@ -560,7 +568,7 @@ pub fn handler_resolve(ctx: Context<ResolveDispute>, provider_wins: bool) -> Res
     }
 
     // ---------------------------------------------------------------------------
-    // Level 4 (Appeal) additional: distribute appeal_stake (Whitepaper Section 5.4)
+    // Level 4 (Appeal) additional: distribute appeal_stake (Whitepaper Section 9.5)
     // ---------------------------------------------------------------------------
     // dispute.initiator was set to the appeal depositor by escalate_to_appeal.
     // If depositor wins: return appeal_stake to them.
@@ -723,7 +731,7 @@ pub struct RespondDispute<'info> {
 
 #[derive(Accounts)]
 pub struct EscalateDispute<'info> {
-    /// Either the requester or provider may escalate (Whitepaper Section 5.2).
+    /// Either the requester or provider may escalate (Whitepaper Section 9).
     pub initiator: Signer<'info>,
 
     #[account(mut)]
@@ -856,7 +864,7 @@ pub struct ResolveDispute<'info> {
 /// Provider re-delivers corrected work during a Level 1 (DirectCorrection) dispute.
 /// Updates the PoE hash and increments corrections_count.
 /// After 3 corrections, auto-escalates to Level 2 (PrivateRounds).
-/// Whitepaper Section 5.1: Level 1 Direct Correction flow.
+/// Whitepaper Section 9.2: Level 1 Direct Correction flow.
 pub fn handler_redeliver(
     ctx: Context<RedeliverInDispute>,
     output_hash: [u8; 32],
@@ -932,7 +940,7 @@ pub fn handler_redeliver(
 
 /// Requester accepts provider's correction during L1 or L2 dispute.
 /// Resolves dispute + completes contract + releases payment (same as accept_contract).
-/// Whitepaper Section 5.1: Requester accepts correction → dispute resolved.
+/// Whitepaper Section 9.2: Requester accepts correction → dispute resolved.
 pub fn handler_accept_correction(ctx: Context<AcceptCorrection>) -> Result<()> {
     // --- Phase 1: Read contract fields immutably for top-up calculation ---
     {
@@ -1383,7 +1391,7 @@ pub struct MigrateDisputeSize<'info> {
 /// Migrate a Dispute account to include the appeal_stake field (u64).
 /// Reallocs from 170 to 178 bytes. The new 8 bytes are zero-filled (appeal_stake=0).
 /// appeal_stake is only non-zero for Level 4 (Appeal) disputes when the
-/// escalating party deposits the double-or-nothing stake (Whitepaper Section 5.4).
+/// escalating party deposits the double-or-nothing stake (Whitepaper Section 9.5).
 /// Only needs to be called once per old dispute.
 pub fn handler_migrate_dispute_appeal_stake(ctx: Context<MigrateDisputeAppealStake>) -> Result<()> {
     let dispute_info = &ctx.accounts.dispute;
