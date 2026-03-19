@@ -50,6 +50,10 @@ pub struct AgentIdentity {
     pub hibernation_ends_at: i64,
     /// Tasks completed since last hibernation ended (cooldown = 5 tasks, Whitepaper §8.6)
     pub tasks_since_last_hibernation: u32,
+    /// Accumulated dispute friction penalty in centibps (50 = 0.5 pts per round).
+    /// Whitepaper §8.1: dispute_friction_total added to S_penalty.
+    /// Each Level 2 private round costs 0.5 pts to BOTH parties (max 2.5 per dispute).
+    pub dispute_friction_total: u16,
     /// Bump seed for PDA derivation
     pub bump: u8,
 }
@@ -193,6 +197,9 @@ pub struct Dispute {
     pub bump: u8,
     /// Number of corrections attempted (max 3 before auto-escalate to L2)
     pub corrections_count: u8,
+    /// Number of Level 2 private negotiation rounds (max 5, Whitepaper §9.3).
+    /// Used to compute dispute friction: 0.5 pts * rounds to each party.
+    pub private_rounds_count: u8,
     /// Appeal stake deposited by escalating party (Level 4 only).
     /// On escalation to Appeal: escalating party deposits 50% of contract value.
     /// Losing party forfeits their appeal_stake (60% insurance, 25% winner, 15% burn).
@@ -230,8 +237,9 @@ pub enum DisputeStatus {
     JuryDecided,
 }
 
-/// Insurance Pool (Whitepaper Section 6)
+/// Insurance Pool (Whitepaper Section 11.5b)
 /// Accumulates 60% of confiscated stakes. Enables 90-day retroactive claims.
+/// Solvency ratio = total_balance / total_active_exposure (§11.5c).
 #[account]
 #[derive(InitSpace)]
 pub struct InsurancePool {
@@ -243,6 +251,8 @@ pub struct InsurancePool {
     pub active_claims: u32,
     /// Authority (program PDA)
     pub authority: Pubkey,
+    /// Sum of all contracts completed in last 90 days eligible for retroactive claims (§11.5c)
+    pub total_active_exposure: u64,
     /// Bump seed
     pub bump: u8,
 }
@@ -325,6 +335,16 @@ pub struct ProtocolConfig {
     /// Requester validation timeout in seconds (default: 72h = 259200)
     /// Whitepaper §7.5 / §12.4.1: deadline_validation, range 24h-168h
     pub deadline_validation: i64,
+    /// Total protocol-wide completed tasks (drives halving schedule, §11.3b)
+    pub total_protocol_tasks: u64,
+    /// Total work reward SWORN emitted so far (convergent to 1M automatic, §11.3b)
+    pub total_work_rewards_emitted: u64,
+    /// Base work reward per task in SWORN lamports (default: 10 SWORN = 10_000_000, §11.3b)
+    pub base_work_reward: u64,
+    /// Halving interval in tasks (default: 50_000, §11.3b)
+    pub halving_interval: u64,
+    /// Max automatic work rewards emittable (1_000_000 SWORN in lamports, §11.3b)
+    pub max_work_rewards: u64,
     /// Bump seed
     pub bump: u8,
 }

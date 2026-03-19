@@ -36,6 +36,7 @@ pub fn handler_initiate(ctx: Context<InitiateDispute>, evidence_hash: [u8; 32]) 
     dispute.resolved_at = 0;
     dispute.bump = ctx.bumps.dispute;
     dispute.corrections_count = 0;
+    dispute.private_rounds_count = 0;
 
     msg!(
         "Dispute initiated on contract #{}. Level: DirectCorrection. Deadline: {}",
@@ -61,6 +62,12 @@ pub fn handler_respond(ctx: Context<RespondDispute>, response_hash: [u8; 32]) ->
 
     dispute.response_hash = response_hash;
     dispute.status = DisputeStatus::Responded;
+
+    // Whitepaper §9.3: Track Level 2 private rounds for friction penalty.
+    // Each response during PrivateRounds increments the round counter (max 5).
+    if dispute.level == DisputeLevel::PrivateRounds && dispute.private_rounds_count < 5 {
+        dispute.private_rounds_count = dispute.private_rounds_count.saturating_add(1);
+    }
 
     msg!(
         "Provider responded to dispute on contract #{}.",
@@ -367,6 +374,18 @@ pub fn handler_resolve(ctx: Context<ResolveDispute>, provider_wins: bool) -> Res
     // Dispute resolution always terminates the contract — decrement provider's active counter
     ctx.accounts.provider_identity.active_contracts =
         ctx.accounts.provider_identity.active_contracts.saturating_sub(1);
+
+    // Whitepaper §9.3: Apply dispute friction penalty to BOTH parties.
+    // Each Level 2 private round costs 0.5 pts (stored as 1 half-point unit).
+    // Friction applies regardless of who wins — it incentivizes quick resolution.
+    let rounds = ctx.accounts.dispute.private_rounds_count as u16;
+    if rounds > 0 {
+        ctx.accounts.provider_identity.dispute_friction_total =
+            ctx.accounts.provider_identity.dispute_friction_total.saturating_add(rounds);
+        ctx.accounts.requester_identity.dispute_friction_total =
+            ctx.accounts.requester_identity.dispute_friction_total.saturating_add(rounds);
+        msg!("Dispute friction: {} half-points added to both parties ({} L2 rounds)", rounds, rounds);
+    }
 
     let is_sol = ctx.accounts.contract.currency == Currency::Sol;
 
@@ -1006,6 +1025,16 @@ pub fn handler_accept_correction(ctx: Context<AcceptCorrection>) -> Result<()> {
             provider_identity.volume_processed.saturating_add(contract.value);
     }
 
+    // Whitepaper §9.3: Apply dispute friction penalty if L2 rounds occurred.
+    let rounds = dispute.private_rounds_count as u16;
+    if rounds > 0 {
+        provider_identity.dispute_friction_total =
+            provider_identity.dispute_friction_total.saturating_add(rounds);
+        ctx.accounts.requester_identity.dispute_friction_total =
+            ctx.accounts.requester_identity.dispute_friction_total.saturating_add(rounds);
+        msg!("Accept-correction friction: {} half-points to both parties", rounds);
+    }
+
     // Extract values before releasing mutable borrow for payment logic
     let contract_value = contract.value;
     let contract_provider_stake = contract.provider_stake;
@@ -1226,6 +1255,14 @@ pub struct AcceptCorrection<'info> {
         bump = provider_identity.bump,
     )]
     pub provider_identity: Box<Account<'info, AgentIdentity>>,
+
+    /// Requester identity for dispute friction penalty (§9.3).
+    #[account(
+        mut,
+        seeds = [b"agent-identity" as &[u8], contract.requester.as_ref()],
+        bump = requester_identity.bump,
+    )]
+    pub requester_identity: Box<Account<'info, AgentIdentity>>,
 
     /// For SWORN: provider's ATA. For SOL: provider's wallet.
     /// CHECK: For SOL, validated key == contract.provider. For SWORN, token CPI validates.

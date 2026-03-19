@@ -50,6 +50,7 @@ pub fn handler_register(ctx: Context<RegisterAgent>, bond_amount: u64) -> Result
     identity.hibernation_started_at = 0;
     identity.hibernation_ends_at = 0;
     identity.tasks_since_last_hibernation = 0;
+    identity.dispute_friction_total = 0;
     identity.bump = ctx.bumps.agent_identity;
 
     // Increment global agent counter
@@ -282,7 +283,12 @@ pub fn handler_calculate_trust_score(
     let total_tasks = identity.tasks_completed.max(1);
     let p_dispute = 50u64 * identity.disputes_lost as u64 / total_tasks;
     let p_abandon = 150u64 * identity.tasks_abandoned as u64 / total_tasks;
-    let s_penalty = p_dispute.saturating_add(p_abandon);
+    // dispute_friction_total is stored as integer points (1 = 1.0 pts).
+    // Whitepaper §8.1: dispute_friction_total is a flat addition to S_penalty.
+    // Each Level 2 round adds 0.5 pts to both parties (tracked as u16, 1 unit = 0.5 pts).
+    // So the actual penalty in integer points = dispute_friction_total / 2.
+    let friction_pts = (identity.dispute_friction_total as u64) / 2;
+    let s_penalty = p_dispute.saturating_add(p_abandon).saturating_add(friction_pts);
 
     let ts_raw = s_base.saturating_sub(s_penalty) as u16;
 
@@ -304,10 +310,10 @@ pub fn handler_calculate_trust_score(
 
     identity.trust_score = ts_after_decay;
     msg!(
-        "TrustScore for {}: {} (task_f={}/10000, vol_f={}/10000, qual_f={}/10000, age_f={}/10000, spons_f={}/10000, s_base={}, p_dispute={}, p_abandon={})",
+        "TrustScore for {}: {} (task_f={}/10000, vol_f={}/10000, qual_f={}/10000, age_f={}/10000, spons_f={}/10000, s_base={}, p_dispute={}, p_abandon={}, friction={})",
         identity.authority, ts_after_decay,
         task_factor_bps, volume_factor_bps, quality_factor_bps, age_factor_bps, sponsor_factor_bps,
-        s_base, p_dispute, p_abandon
+        s_base, p_dispute, p_abandon, friction_pts
     );
     Ok(())
 }

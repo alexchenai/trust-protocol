@@ -39,9 +39,12 @@ func CalculateTrustScore(a *AgentIdentity, monthsSinceCreation, monthsInactive, 
 	sBase := 30*taskFactor + 20*volumeFactor + 25*qualityFactor + 20*ageFactor + 5*sponsorBonus
 
 	maxTasks := math.Max(1, totalTasks)
+	// Whitepaper §8.1: S_penalty includes dispute_friction_total (0.5 pts per L2 round)
+	frictionPts := float64(a.DisputeFrictionTotal) * 0.5
 	sPenalty := 50*(float64(a.DisputesLost)/maxTasks) +
 		150*(float64(a.TasksAbandoned)/maxTasks) +
-		100*float64(a.FraudFlags)
+		100*float64(a.FraudFlags) +
+		frictionPts
 
 	// Decay rate: 2.0/month normally, 0.5/month during hibernation (Whitepaper §8.6)
 	decayRate := 2.0

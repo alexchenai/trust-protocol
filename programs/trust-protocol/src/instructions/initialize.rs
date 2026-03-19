@@ -25,6 +25,11 @@ pub fn handler(ctx: Context<Initialize>, params: InitializeParams) -> Result<()>
     config.protocol_fee_sol_bps  = 100;   // 1.0% — SOL contracts (incentive to migrate to SWORN)
     config.max_corrections = 3;           // §12.4.1: governable, range 1-10
     config.deadline_validation = 259_200; // 72h in seconds — §7.5 / §12.4.1
+    config.total_protocol_tasks = 0;
+    config.total_work_rewards_emitted = 0;
+    config.base_work_reward = 10_000_000; // 10 SWORN (in lamports, 1 SWORN = 1_000_000 lamports)
+    config.halving_interval = 50_000;     // §11.3b: halving every 50,000 tasks
+    config.max_work_rewards = 1_000_000_000_000; // 1M SWORN in lamports (1M * 1_000_000)
     config.bump = ctx.bumps.protocol_config;
 
     let pool = &mut ctx.accounts.insurance_pool;
@@ -32,6 +37,7 @@ pub fn handler(ctx: Context<Initialize>, params: InitializeParams) -> Result<()>
     pool.total_claims_paid = 0;
     pool.active_claims = 0;
     pool.authority = ctx.accounts.pool_authority.key();
+    pool.total_active_exposure = 0;
     pool.bump = ctx.bumps.insurance_pool;
 
     msg!("Trust Protocol initialized. Admin: {}", config.admin);
