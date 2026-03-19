@@ -220,16 +220,57 @@ pub fn handler_deliver(
 /// Deducts 0.5% (SWORN contracts) or 1.0% (SOL contracts) protocol fee (70% treasury / 20% insurance / 10% burn).
 /// Whitepaper Section 11.8: fee deducted at accept_contract.
 pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
-    let contract = &mut ctx.accounts.contract;
-    require!(
-        contract.status == ContractStatus::Delivered,
-        TrustError::InvalidContractStatus
-    );
-    require!(
-        contract.requester == ctx.accounts.requester.key(),
-        TrustError::UnauthorizedRequester
-    );
+    // --- Phase 1: Read contract fields immutably for top-up calculation ---
+    {
+        let contract = &ctx.accounts.contract;
+        require!(
+            contract.status == ContractStatus::Delivered,
+            TrustError::InvalidContractStatus
+        );
+        require!(
+            contract.requester == ctx.accounts.requester.key(),
+            TrustError::UnauthorizedRequester
+        );
 
+        // Whitepaper §7.7 Top-up: requester deposits the difference before payment release
+        let contract_value = contract.value;
+        let contract_currency = contract.currency;
+        let escrow_factor_bps = contract.escrow_factor_bps;
+        let escrow_factor = if escrow_factor_bps > 0 { escrow_factor_bps } else { 10_000u16 };
+        let escrow_deposit = (contract_value as u128 * escrow_factor as u128 / 10_000) as u64;
+        let top_up_amount = contract_value.saturating_sub(escrow_deposit);
+
+        if top_up_amount > 0 {
+            if contract_currency == Currency::Sol {
+                let requester_info = ctx.accounts.requester.to_account_info();
+                let contract_info = ctx.accounts.contract.to_account_info();
+                let ix = anchor_lang::solana_program::system_instruction::transfer(
+                    requester_info.key,
+                    contract_info.key,
+                    top_up_amount,
+                );
+                anchor_lang::solana_program::program::invoke(
+                    &ix,
+                    &[requester_info, contract_info, ctx.accounts.system_program.to_account_info()],
+                )?;
+            } else {
+                token::transfer(
+                    CpiContext::new(
+                        ctx.accounts.token_program.to_account_info(),
+                        Transfer {
+                            from: ctx.accounts.requester_token_account.to_account_info(),
+                            to: ctx.accounts.escrow_vault.to_account_info(),
+                            authority: ctx.accounts.requester.to_account_info(),
+                        },
+                    ),
+                    top_up_amount,
+                )?;
+            }
+        }
+    } // immutable borrow of contract ends here
+
+    // --- Phase 2: Mutate contract state ---
+    let contract = &mut ctx.accounts.contract;
     let now = Clock::get()?.unix_timestamp;
     contract.status = ContractStatus::Completed;
     contract.resolved_at = now;
@@ -259,7 +300,6 @@ pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
     let contract_provider_stake = contract.provider_stake;
     let contract_currency = contract.currency;
     let contract_id_val = contract.id;
-    let contract_escrow_factor_bps = contract.escrow_factor_bps;
     let tasks_completed = provider_identity.tasks_completed;
 
     // Calculate protocol fee: 0.5% for SWORN contracts, 1.0% for SOL (Whitepaper §11.8)
@@ -274,15 +314,9 @@ pub fn handler_accept(ctx: Context<AcceptContract>) -> Result<()> {
     let fee_insurance = protocol_fee * 20 / 100;
     let fee_burn = protocol_fee.saturating_sub(fee_treasury).saturating_sub(fee_insurance); // 10%
 
-    // Net payment to provider = escrowed amount - protocol fee + stake return
-    // Whitepaper §7.7: requester may deposit partial escrow; provider receives what was escrowed
-    let escrow_factor = if contract_escrow_factor_bps > 0 { contract_escrow_factor_bps } else { 10_000u16 };
-    let escrow_deposit = (contract_value as u128)
-        .checked_mul(escrow_factor as u128)
-        .ok_or(TrustError::MathOverflow)?
-        / 10_000;
-    let escrow_deposit = escrow_deposit as u64;
-    let net_payment = escrow_deposit.saturating_sub(protocol_fee);
+    // Net payment to provider = full contract_value - protocol fee + stake return
+    // Provider always receives full value regardless of escrow_factor (top-up done in Phase 1)
+    let net_payment = contract_value.saturating_sub(protocol_fee);
     let provider_release = net_payment
         .checked_add(contract_provider_stake)
         .ok_or(TrustError::MathOverflow)?;
@@ -781,6 +815,11 @@ pub struct AcceptContract<'info> {
     #[account(mut)]
     pub sworn_mint: UncheckedAccount<'info>,
 
+    /// Requester's token account for SWORN top-up (§7.7).
+    /// CHECK: For SWORN, validated by token CPI (owner == requester). Unused for SOL.
+    #[account(mut)]
+    pub requester_token_account: UncheckedAccount<'info>,
+
     #[account(
         seeds = [b"protocol-config"],
         bump = protocol_config.bump,
@@ -788,6 +827,7 @@ pub struct AcceptContract<'info> {
     pub protocol_config: Box<Account<'info, ProtocolConfig>>,
 
     pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
 }
 
 // ---------------------------------------------------------------------------

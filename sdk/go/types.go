@@ -67,10 +67,17 @@ type AgentIdentity struct {
 // + 4(tasks_since_last_hibernation) + 1(bump) = 144
 const AgentIdentitySize = 144
 
+// OldAgentIdentitySize is the legacy on-chain size before hibernation fields
+// were added (8 disc + 115 fields = 123 bytes). Accounts created before the
+// upgrade still have this size on-chain until they are realloc-ed.
+const OldAgentIdentitySize = 123
+
 // DecodeAgentIdentity parses raw account data (including 8-byte discriminator).
+// It is backward-compatible: accounts with the old 123-byte layout are decoded
+// with hibernation fields defaulting to zero values.
 func DecodeAgentIdentity(data []byte) (*AgentIdentity, error) {
-	if len(data) < AgentIdentitySize {
-		return nil, fmt.Errorf("agent identity data too short: %d < %d", len(data), AgentIdentitySize)
+	if len(data) < OldAgentIdentitySize {
+		return nil, fmt.Errorf("agent identity data too short: %d < %d", len(data), OldAgentIdentitySize)
 	}
 	o := 8 // skip discriminator
 	a := &AgentIdentity{}
@@ -110,16 +117,21 @@ func DecodeAgentIdentity(data []byte) (*AgentIdentity, error) {
 	o += 2
 	a.Banned = data[o] == 1
 	o++
-	// Hibernation fields (§8.6)
-	a.IsHibernating = data[o] == 1
-	o++
-	a.HibernationStartedAt = int64(binary.LittleEndian.Uint64(data[o : o+8]))
-	o += 8
-	a.HibernationEndsAt = int64(binary.LittleEndian.Uint64(data[o : o+8]))
-	o += 8
-	a.TasksSinceLastHibernation = binary.LittleEndian.Uint32(data[o : o+4])
-	o += 4
-	a.Bump = data[o]
+	// Hibernation fields (§8.6) — only present in new 144-byte accounts
+	if len(data) >= AgentIdentitySize {
+		a.IsHibernating = data[o] == 1
+		o++
+		a.HibernationStartedAt = int64(binary.LittleEndian.Uint64(data[o : o+8]))
+		o += 8
+		a.HibernationEndsAt = int64(binary.LittleEndian.Uint64(data[o : o+8]))
+		o += 8
+		a.TasksSinceLastHibernation = binary.LittleEndian.Uint32(data[o : o+4])
+		o += 4
+		a.Bump = data[o]
+	} else {
+		// Legacy 123-byte account: bump is right after banned
+		a.Bump = data[o]
+	}
 	return a, nil
 }
 
