@@ -76,8 +76,8 @@ pub mod trust_protocol {
     /// Create contract. Provider stakes based on TrustScore.
     /// stake = value * factor_stake(score). Score 0 = 100%, Score 100 = 5%.
     /// currency: 0=SWORN (default), 1=SOL. Whitepaper §11.8b.
-    pub fn create_contract(ctx: Context<CreateContract>, value: u64, currency: u8) -> Result<()> {
-        contract::handler_create(ctx, value, currency)
+    pub fn create_contract(ctx: Context<CreateContract>, value: u64, currency: u8, spec_hash: [u8; 32]) -> Result<()> {
+        contract::handler_create(ctx, value, currency, spec_hash)
     }
 
     /// Propose a contract. Only requester signs; deposits escrow.
@@ -98,6 +98,12 @@ pub mod trust_protocol {
         proposal::handler_cancel_proposal(ctx)
     }
 
+
+    /// Requester rejects delivery and requests correction (Whitepaper §6.2).
+    /// corrections_used is incremented. Auto-escalates to dispute when limit reached.
+    pub fn reject_delivery(ctx: Context<RejectDelivery>, reason_hash: [u8; 32]) -> Result<()> {
+        contract::handler_reject_delivery(ctx, reason_hash)
+    }
     /// Provider submits deliverable with Proof of Execution (PoE).
     /// Whitepaper Section 1: immutable PoE with input/output hashes.
     pub fn deliver_contract(
@@ -188,6 +194,13 @@ pub mod trust_protocol {
     /// Call once per old dispute. Idempotent for already-migrated accounts.
     pub fn migrate_dispute_appeal_stake(ctx: Context<MigrateDisputeAppealStake>) -> Result<()> {
         dispute::handler_migrate_dispute_appeal_stake(ctx)
+    }
+
+    /// Migrate Dispute accounts to include arbitration_fee field (u64).
+    /// Reallocs from 178 to 186 bytes. The new 8 bytes are zero-filled.
+    /// Whitepaper Section 9.4: 2% arbitration fee per party for L3/L4 disputes.
+    pub fn migrate_dispute_arbitration_fee(ctx: Context<MigrateDisputeArbitrationFee>) -> Result<()> {
+        dispute::handler_migrate_dispute_arbitration_fee(ctx)
     }
 
     // === Insurance Pool (Whitepaper Section 6) ===

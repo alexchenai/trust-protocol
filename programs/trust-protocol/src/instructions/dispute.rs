@@ -684,9 +684,27 @@ pub fn handler_resolve(ctx: Context<ResolveDispute>, provider_wins: bool) -> Res
                     token::burn(burn_ctx, appeal_burn)?;
                 }
             }
-            msg!("Appeal Level 4: depositor {} LOSES. Appeal stake {} confiscated: ins={}, winner={}, burn={}",
-                depositor, appeal_stake, appeal_ins, appeal_winner, appeal_burn);
+            // Whitepaper 9.5: Losing an appeal counts as an ADDITIONAL lost dispute
+            // (severe penalty on top of the base dispute loss already counted above).
+            if depositor == ctx.accounts.contract.provider {
+                ctx.accounts.provider_identity.disputes_lost =
+                    ctx.accounts.provider_identity.disputes_lost.saturating_add(1);
+            } else {
+                ctx.accounts.requester_identity.disputes_lost =
+                    ctx.accounts.requester_identity.disputes_lost.saturating_add(1);
+            }
+            msg!("Appeal L4: depositor {} LOSES. Stake {} confiscated. Extra disputes_lost.",
+                depositor, appeal_stake);
         }
+    }
+
+
+    // Whitepaper 9.4: Arbitration fee tracking for L3/L4 disputes.
+    // Both parties owe 2% each. Winner recovers. Loser forfeits to jury.
+    // Phase 0-2: recorded on-chain, distributed off-chain by admin.
+    let arb_fee = ctx.accounts.dispute.arbitration_fee;
+    if arb_fee > 0 {
+        msg!("Arbitration fee: {} per party. Loser forfeits to jury.", arb_fee);
     }
 
     Ok(())
@@ -1452,6 +1470,70 @@ pub struct MigrateDisputeAppealStake<'info> {
 
     /// CHECK: Validated manually via PDA derivation + owner check. Cannot use Account<Dispute>
     /// because old accounts have smaller size and fail deserialization.
+    #[account(mut)]
+    pub dispute: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+// ---------------------------------------------------------------------------
+// Migration: resize Dispute accounts to include arbitration_fee field
+// ---------------------------------------------------------------------------
+
+/// Migrate a Dispute account to include the arbitration_fee field (u64).
+/// Reallocs from 178 to 186 bytes. The new 8 bytes are zero-filled.
+/// arbitration_fee is set when a dispute escalates to Level 3 (PublicJury).
+/// Whitepaper Section 9.4: 2% of contract value per party as jury arbitration fee.
+pub fn handler_migrate_dispute_arbitration_fee(ctx: Context<MigrateDisputeArbitrationFee>) -> Result<()> {
+    let dispute_info = &ctx.accounts.dispute;
+    let contract_key = ctx.accounts.contract.key();
+
+    let (expected_pda, _bump) = Pubkey::find_program_address(
+        &[b"dispute", contract_key.as_ref()],
+        ctx.program_id,
+    );
+    require!(dispute_info.key() == expected_pda, TrustError::InvalidEscrowVault);
+    require!(dispute_info.owner == ctx.program_id, TrustError::InvalidEscrowVault);
+
+    let old_len = dispute_info.data_len();
+    let new_len = 8 + Dispute::INIT_SPACE;
+
+    if old_len < new_len {
+        let rent = Rent::get()?;
+        let new_min_balance = rent.minimum_balance(new_len);
+        let old_balance = dispute_info.lamports();
+        if old_balance < new_min_balance {
+            let diff = new_min_balance - old_balance;
+            anchor_lang::system_program::transfer(
+                CpiContext::new(
+                    ctx.accounts.system_program.to_account_info(),
+                    anchor_lang::system_program::Transfer {
+                        from: ctx.accounts.payer.to_account_info(),
+                        to: dispute_info.to_account_info(),
+                    },
+                ),
+                diff,
+            )?;
+        }
+        dispute_info.realloc(new_len, false)?;
+        let mut data = dispute_info.try_borrow_mut_data()?;
+        data[old_len..new_len].fill(0);
+        msg!("Dispute migrated. {} -> {} bytes.", old_len, new_len);
+    } else {
+        msg!("Dispute already at correct size. No migration needed.");
+    }
+
+    Ok(())
+}
+
+#[derive(Accounts)]
+pub struct MigrateDisputeArbitrationFee<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    pub contract: Account<'info, Contract>,
+
+    /// CHECK: Validated manually via PDA derivation + owner check.
     #[account(mut)]
     pub dispute: UncheckedAccount<'info>,
 
