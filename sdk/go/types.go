@@ -168,11 +168,16 @@ type ProtocolConfig struct {
 	ProtocolFeeSolBps       uint16           `json:"protocol_fee_sol_bps"`
 	MaxCorrections          uint8            `json:"max_corrections"`
 	DeadlineValidation      int64            `json:"deadline_validation"`
+	TotalProtocolTasks      uint64           `json:"total_protocol_tasks"`
+	TotalWorkRewardsEmitted uint64           `json:"total_work_rewards_emitted"`
+	BaseWorkReward          uint64           `json:"base_work_reward"`
+	HalvingInterval         uint64           `json:"halving_interval"`
+	MaxWorkRewards          uint64           `json:"max_work_rewards"`
 	Bump                    uint8            `json:"bump"`
 }
 
 // ProtocolConfigSize is the on-chain size including Anchor discriminator.
-const ProtocolConfigSize = 146
+const ProtocolConfigSize = 186
 
 // DecodeProtocolConfig parses raw account data (including 8-byte discriminator).
 func DecodeProtocolConfig(data []byte) (*ProtocolConfig, error) {
@@ -225,6 +230,26 @@ func DecodeProtocolConfig(data []byte) (*ProtocolConfig, error) {
 	}
 	if o+8 <= len(data) {
 		c.DeadlineValidation = int64(binary.LittleEndian.Uint64(data[o : o+8]))
+		o += 8
+	}
+	if o+8 <= len(data) {
+		c.TotalProtocolTasks = binary.LittleEndian.Uint64(data[o : o+8])
+		o += 8
+	}
+	if o+8 <= len(data) {
+		c.TotalWorkRewardsEmitted = binary.LittleEndian.Uint64(data[o : o+8])
+		o += 8
+	}
+	if o+8 <= len(data) {
+		c.BaseWorkReward = binary.LittleEndian.Uint64(data[o : o+8])
+		o += 8
+	}
+	if o+8 <= len(data) {
+		c.HalvingInterval = binary.LittleEndian.Uint64(data[o : o+8])
+		o += 8
+	}
+	if o+8 <= len(data) {
+		c.MaxWorkRewards = binary.LittleEndian.Uint64(data[o : o+8])
 		o += 8
 	}
 	if o < len(data) {

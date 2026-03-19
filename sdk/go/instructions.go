@@ -39,6 +39,7 @@ func NewInitializeInstruction(
 	swornMint solana.PublicKey,
 	configPDA solana.PublicKey,
 	insurancePoolPDA solana.PublicKey,
+	poolAuthorityPDA solana.PublicKey,
 	params []byte,
 ) solana.Instruction {
 	disc := AnchorDiscriminator("initialize")
@@ -52,7 +53,9 @@ func NewInitializeInstruction(
 			solana.Meta(swornMint),
 			solana.Meta(configPDA).WRITE(),
 			solana.Meta(insurancePoolPDA).WRITE(),
+			solana.Meta(poolAuthorityPDA),
 			solana.Meta(SystemProgramID),
+			solana.Meta(TokenProgramID),
 		},
 		DataBytes: data,
 	}
@@ -106,14 +109,17 @@ func NewForceMatureInstruction(
 	}
 }
 
-// NewCreateContractInstruction builds "create_contract" with value arg.
+// NewCreateContractInstruction builds "create_contract" with value and currency args.
 // The escrow vault is init'd in this instruction (requires system_program).
 // providerIdentityPDA is mutable (active_contracts increment + exposure limit check).
+// requesterIdentityPDA is needed to calculate escrow_factor (Whitepaper Section 7.7).
+// currency: 0 = SWORN, 1 = SOL.
 func NewCreateContractInstruction(
 	programID solana.PublicKey,
 	requester solana.PublicKey,
 	provider solana.PublicKey,
 	providerIdentityPDA solana.PublicKey,
+	requesterIdentityPDA solana.PublicKey,
 	contractPDA solana.PublicKey,
 	requesterTokenAccount solana.PublicKey,
 	providerTokenAccount solana.PublicKey,
@@ -121,17 +127,20 @@ func NewCreateContractInstruction(
 	swornMint solana.PublicKey,
 	configPDA solana.PublicKey,
 	value uint64,
+	currency uint8,
 ) solana.Instruction {
 	disc := AnchorDiscriminator("create_contract")
-	var data [16]byte
+	var data [17]byte
 	copy(data[0:8], disc[:])
 	binary.LittleEndian.PutUint64(data[8:16], value)
+	data[16] = currency
 	return &solana.GenericInstruction{
 		ProgID: programID,
 		AccountValues: solana.AccountMetaSlice{
 			solana.Meta(requester).SIGNER().WRITE(),
 			solana.Meta(provider),
-			solana.Meta(providerIdentityPDA).WRITE(), // mutable: active_contracts
+			solana.Meta(providerIdentityPDA).WRITE(),
+			solana.Meta(requesterIdentityPDA),
 			solana.Meta(contractPDA).WRITE(),
 			solana.Meta(requesterTokenAccount).WRITE(),
 			solana.Meta(providerTokenAccount).WRITE(),
@@ -189,6 +198,7 @@ func NewAcceptContractInstruction(
 	insuranceVault solana.PublicKey,
 	escrowVaultPDA solana.PublicKey,
 	swornMint solana.PublicKey,
+	requesterTokenAccount solana.PublicKey,
 	configPDA solana.PublicKey,
 ) solana.Instruction {
 	disc := AnchorDiscriminator("accept_contract")
@@ -203,9 +213,11 @@ func NewAcceptContractInstruction(
 			solana.Meta(treasuryTokenAccount).WRITE(),
 			solana.Meta(insuranceVault).WRITE(),
 			solana.Meta(escrowVaultPDA).WRITE(),
-			solana.Meta(swornMint).WRITE(), // for burn CPI (10% fee)
+			solana.Meta(swornMint).WRITE(),
+			solana.Meta(requesterTokenAccount).WRITE(), // for top-up (Section 7.7)
 			solana.Meta(configPDA),
 			solana.Meta(TokenProgramID),
+			solana.Meta(SystemProgramID),
 		},
 		DataBytes: disc[:],
 	}
@@ -231,7 +243,6 @@ func NewSetupBondVaultInstruction(
 			solana.Meta(poolAuthorityPDA),
 			solana.Meta(TokenProgramID),
 			solana.Meta(SystemProgramID),
-			solana.Meta(RentSysvarID),
 		},
 		DataBytes: disc[:],
 	}
@@ -300,6 +311,7 @@ func NewProposeContractInstruction(
 	requester solana.PublicKey,
 	provider solana.PublicKey,
 	providerIdentityPDA solana.PublicKey,
+	requesterIdentityPDA solana.PublicKey,
 	contractPDA solana.PublicKey,
 	requesterTokenAccount solana.PublicKey,
 	escrowVaultPDA solana.PublicKey,
@@ -321,6 +333,7 @@ func NewProposeContractInstruction(
 			solana.Meta(requester).SIGNER().WRITE(),
 			solana.Meta(provider),
 			solana.Meta(providerIdentityPDA),
+			solana.Meta(requesterIdentityPDA),
 			solana.Meta(contractPDA).WRITE(),
 			solana.Meta(requesterTokenAccount).WRITE(),
 			solana.Meta(escrowVaultPDA).WRITE(),
@@ -328,7 +341,6 @@ func NewProposeContractInstruction(
 			solana.Meta(configPDA).WRITE(),
 			solana.Meta(TokenProgramID),
 			solana.Meta(SystemProgramID),
-			solana.Meta(RentSysvarID),
 		},
 		DataBytes: data[:],
 	}
@@ -520,6 +532,7 @@ func NewRedeliverInDisputeInstruction(
 	providerIdentityPDA solana.PublicKey,
 	disputePDA solana.PublicKey,
 	poePDA solana.PublicKey,
+	configPDA solana.PublicKey,
 	outputHash [32]byte,
 	arweaveTx string,
 ) solana.Instruction {
@@ -538,6 +551,7 @@ func NewRedeliverInDisputeInstruction(
 			solana.Meta(providerIdentityPDA).WRITE(), // tracks total_deliveries
 			solana.Meta(disputePDA).WRITE(),
 			solana.Meta(poePDA).WRITE(),
+			solana.Meta(configPDA),
 		},
 		DataBytes: data,
 	}
@@ -1143,6 +1157,120 @@ func NewExpireHibernationInstruction(
 		AccountValues: solana.AccountMetaSlice{
 			solana.Meta(caller).SIGNER().WRITE(),
 			solana.Meta(agentIdentityPDA).WRITE(),
+		},
+		DataBytes: disc[:],
+	}
+}
+
+// NewMigrateBondVaultInstruction builds the "migrate_bond_vault" instruction.
+// Admin migrates the bond vault from old mint to new mint (v2 with metadata).
+// Accounts mirror MigrateBondVault struct in admin.rs.
+func NewMigrateBondVaultInstruction(
+	programID solana.PublicKey,
+	admin solana.PublicKey,
+	configPDA solana.PublicKey,
+	oldBondVault solana.PublicKey,
+	adminOldTokenAccount solana.PublicKey,
+	newSwornMint solana.PublicKey,
+	newBondVault solana.PublicKey,
+	vaultAuthority solana.PublicKey,
+) solana.Instruction {
+	disc := AnchorDiscriminator("migrate_bond_vault")
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(admin).SIGNER().WRITE(),
+			solana.Meta(configPDA).WRITE(),
+			solana.Meta(oldBondVault).WRITE(),
+			solana.Meta(adminOldTokenAccount).WRITE(),
+			solana.Meta(newSwornMint),
+			solana.Meta(newBondVault).WRITE(),
+			solana.Meta(vaultAuthority),
+			solana.Meta(TokenProgramID),
+			solana.Meta(SystemProgramID),
+		},
+		DataBytes: disc[:],
+	}
+}
+
+// NewDepositToInsurancePoolInstruction builds the "deposit_to_insurance_pool" instruction.
+// Deposits tokens into the InsurancePool.
+// Whitepaper Section 11.5b: 60% of confiscations, 20% of protocol fees go to pool.
+// Args: amount u64 (8 bytes LE).
+func NewDepositToInsurancePoolInstruction(
+	programID solana.PublicKey,
+	depositor solana.PublicKey,
+	depositorTokenAccount solana.PublicKey,
+	insuranceVault solana.PublicKey,
+	insurancePoolPDA solana.PublicKey,
+	amount uint64,
+) solana.Instruction {
+	disc := AnchorDiscriminator("deposit_to_insurance_pool")
+	var data [16]byte
+	copy(data[0:8], disc[:])
+	binary.LittleEndian.PutUint64(data[8:16], amount)
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(depositor).SIGNER().WRITE(),
+			solana.Meta(depositorTokenAccount).WRITE(),
+			solana.Meta(insuranceVault).WRITE(),
+			solana.Meta(insurancePoolPDA).WRITE(),
+			solana.Meta(TokenProgramID),
+		},
+		DataBytes: data[:],
+	}
+}
+
+// NewUpdateInsuranceExposureInstruction builds the "update_insurance_exposure" instruction.
+// Updates InsurancePool total_active_exposure for solvency ratio calculation.
+// Whitepaper Section 11.5c: solvency_ratio = balance / exposure. Admin-only Phase 0-2.
+// Args: new_exposure u64 (8 bytes LE).
+func NewUpdateInsuranceExposureInstruction(
+	programID solana.PublicKey,
+	authority solana.PublicKey,
+	insurancePoolPDA solana.PublicKey,
+	configPDA solana.PublicKey,
+	newExposure uint64,
+) solana.Instruction {
+	disc := AnchorDiscriminator("update_insurance_exposure")
+	var data [16]byte
+	copy(data[0:8], disc[:])
+	binary.LittleEndian.PutUint64(data[8:16], newExposure)
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(authority).SIGNER(),
+			solana.Meta(insurancePoolPDA).WRITE(),
+			solana.Meta(configPDA),
+		},
+		DataBytes: data[:],
+	}
+}
+
+// NewEmitWorkRewardInstruction builds the "emit_work_reward" instruction.
+// Emits work reward for a completed task per halving schedule.
+// Whitepaper Section 11.3b: Work Rewards emission with halving.
+// No args (reward amount calculated on-chain from config).
+// Admin-only in Phase 0-2; permissionless in Phase 3+.
+func NewEmitWorkRewardInstruction(
+	programID solana.PublicKey,
+	authority solana.PublicKey,
+	configPDA solana.PublicKey,
+	workRewardsVault solana.PublicKey,
+	providerTokenAccount solana.PublicKey,
+	providerIdentityPDA solana.PublicKey,
+) solana.Instruction {
+	disc := AnchorDiscriminator("emit_work_reward")
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(authority).SIGNER(),
+			solana.Meta(configPDA).WRITE(),
+			solana.Meta(workRewardsVault).WRITE(),
+			solana.Meta(providerTokenAccount).WRITE(),
+			solana.Meta(providerIdentityPDA).WRITE(),
+			solana.Meta(TokenProgramID),
 		},
 		DataBytes: disc[:],
 	}
