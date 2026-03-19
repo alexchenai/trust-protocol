@@ -546,9 +546,7 @@ func NewRedeliverInDisputeInstruction(
 // NewAcceptCorrectionInstruction builds "accept_correction" (no extra args).
 // The requester signs to accept a provider's correction during dispute.
 // Resolves dispute + completes contract + releases payment with protocol fee.
-// Accounts: requester, contract, dispute, proof_of_execution, provider_identity,
-//
-// NewAcceptCorrectionInstruction builds "accept_correction" (no extra args).
+// Includes top-up (§7.7): requester deposits remaining contract value before release.
 // swornMint required for 10% burn CPI on SWORN contracts.
 func NewAcceptCorrectionInstruction(
 	programID solana.PublicKey,
@@ -562,6 +560,7 @@ func NewAcceptCorrectionInstruction(
 	insuranceVault solana.PublicKey,
 	escrowVaultPDA solana.PublicKey,
 	swornMint solana.PublicKey,
+	requesterTokenAccount solana.PublicKey,
 	configPDA solana.PublicKey,
 ) solana.Instruction {
 	disc := AnchorDiscriminator("accept_correction")
@@ -577,9 +576,11 @@ func NewAcceptCorrectionInstruction(
 			solana.Meta(treasuryTokenAccount).WRITE(),
 			solana.Meta(insuranceVault).WRITE(),
 			solana.Meta(escrowVaultPDA).WRITE(),
-			solana.Meta(swornMint).WRITE(), // for burn CPI (10% fee)
+			solana.Meta(swornMint).WRITE(),
+			solana.Meta(requesterTokenAccount).WRITE(), // for top-up (§7.7)
 			solana.Meta(configPDA),
 			solana.Meta(TokenProgramID),
+			solana.Meta(SystemProgramID),
 		},
 		DataBytes: disc[:],
 	}
@@ -1049,12 +1050,14 @@ func NewUpdateConfigInstruction(
 
 // NewTimeoutDeliveryInstruction builds the timeout_delivery instruction.
 // programID: deployed program address. All other accounts mirror TimeoutDelivery struct in contract.rs.
+// requesterIdentityPDA: requester's identity PDA for reputational penalty (Whitepaper §7.5).
 func NewTimeoutDeliveryInstruction(
 	programID solana.PublicKey,
 	caller solana.PublicKey,
 	contractPDA solana.PublicKey,
 	poePDA solana.PublicKey,
 	providerIdentityPDA solana.PublicKey,
+	requesterIdentityPDA solana.PublicKey,
 	providerTokenAccount solana.PublicKey,
 	treasuryTokenAccount solana.PublicKey,
 	insuranceVault solana.PublicKey,
@@ -1070,6 +1073,7 @@ func NewTimeoutDeliveryInstruction(
 			solana.Meta(contractPDA).WRITE(),
 			solana.Meta(poePDA).WRITE(),
 			solana.Meta(providerIdentityPDA).WRITE(),
+			solana.Meta(requesterIdentityPDA).WRITE(), // §7.5: requester penalty
 			solana.Meta(providerTokenAccount).WRITE(),
 			solana.Meta(treasuryTokenAccount).WRITE(),
 			solana.Meta(insuranceVault).WRITE(),

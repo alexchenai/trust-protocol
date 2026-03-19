@@ -905,6 +905,12 @@ pub fn handler_timeout_delivery(ctx: Context<TimeoutDelivery>) -> Result<()> {
         }
     }
 
+    // Whitepaper §7.5: Requester receives reputational penalty equivalent to losing a dispute
+    {
+        let requester = &mut ctx.accounts.requester_identity;
+        requester.disputes_lost = requester.disputes_lost.saturating_add(1);
+    }
+
     if contract_currency == Currency::Sol {
         require!(
             ctx.accounts.provider_token_account.key() == ctx.accounts.contract.provider,
@@ -1031,6 +1037,14 @@ pub struct TimeoutDelivery<'info> {
         bump = provider_identity.bump,
     )]
     pub provider_identity: Box<Account<'info, AgentIdentity>>,
+
+    /// Requester identity — for reputational penalty on timeout (Whitepaper §7.5)
+    #[account(
+        mut,
+        seeds = [b"agent-identity" as &[u8], contract.requester.as_ref()],
+        bump = requester_identity.bump,
+    )]
+    pub requester_identity: Box<Account<'info, AgentIdentity>>,
 
     /// For SWORN: provider's ATA. For SOL: provider's wallet.
     /// CHECK: For SOL, validated key == contract.provider. For SWORN, token CPI validates.

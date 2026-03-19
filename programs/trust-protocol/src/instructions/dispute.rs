@@ -915,16 +915,56 @@ pub fn handler_redeliver(
 /// Resolves dispute + completes contract + releases payment (same as accept_contract).
 /// Whitepaper Section 5.1: Requester accepts correction → dispute resolved.
 pub fn handler_accept_correction(ctx: Context<AcceptCorrection>) -> Result<()> {
-    let contract = &mut ctx.accounts.contract;
-    require!(
-        contract.status == ContractStatus::Delivered,
-        TrustError::InvalidContractStatus
-    );
-    require!(
-        contract.requester == ctx.accounts.requester.key(),
-        TrustError::UnauthorizedRequester
-    );
+    // --- Phase 1: Read contract fields immutably for top-up calculation ---
+    {
+        let contract = &ctx.accounts.contract;
+        require!(
+            contract.status == ContractStatus::Delivered,
+            TrustError::InvalidContractStatus
+        );
+        require!(
+            contract.requester == ctx.accounts.requester.key(),
+            TrustError::UnauthorizedRequester
+        );
 
+        // Whitepaper §7.7 Top-up: requester deposits the difference before payment release
+        let contract_value = contract.value;
+        let contract_currency = contract.currency;
+        let escrow_factor_bps = contract.escrow_factor_bps;
+        let escrow_factor = if escrow_factor_bps > 0 { escrow_factor_bps } else { 10_000u16 };
+        let escrow_deposit = (contract_value as u128 * escrow_factor as u128 / 10_000) as u64;
+        let top_up_amount = contract_value.saturating_sub(escrow_deposit);
+
+        if top_up_amount > 0 {
+            if contract_currency == Currency::Sol {
+                let requester_info = ctx.accounts.requester.to_account_info();
+                let contract_info = ctx.accounts.contract.to_account_info();
+                let ix = anchor_lang::solana_program::system_instruction::transfer(
+                    requester_info.key,
+                    contract_info.key,
+                    top_up_amount,
+                );
+                anchor_lang::solana_program::program::invoke(
+                    &ix,
+                    &[requester_info, contract_info, ctx.accounts.system_program.to_account_info()],
+                )?;
+            } else {
+                token::transfer(
+                    CpiContext::new(
+                        ctx.accounts.token_program.to_account_info(),
+                        Transfer {
+                            from: ctx.accounts.requester_token_account.to_account_info(),
+                            to: ctx.accounts.escrow_vault.to_account_info(),
+                            authority: ctx.accounts.requester.to_account_info(),
+                        },
+                    ),
+                    top_up_amount,
+                )?;
+            }
+        }
+    } // immutable borrow of contract ends here
+
+    // --- Phase 2: Validate dispute + mutate state ---
     let dispute = &mut ctx.accounts.dispute;
     require!(
         dispute.level == DisputeLevel::DirectCorrection
@@ -939,6 +979,7 @@ pub fn handler_accept_correction(ctx: Context<AcceptCorrection>) -> Result<()> {
     dispute.resolved_at = now;
 
     // Complete the contract
+    let contract = &mut ctx.accounts.contract;
     contract.status = ContractStatus::Completed;
     contract.resolved_at = now;
 
@@ -954,6 +995,9 @@ pub fn handler_accept_correction(ctx: Context<AcceptCorrection>) -> Result<()> {
     // Track corrections_received (requester accepted = provider needed correction)
     provider_identity.corrections_received =
         provider_identity.corrections_received.saturating_add(dispute.corrections_count as u32);
+    // Hibernation cooldown counter (§8.6)
+    provider_identity.tasks_since_last_hibernation =
+        provider_identity.tasks_since_last_hibernation.saturating_add(1);
     // Track volume by currency
     if contract.currency == Currency::Sol {
         provider_identity.volume_sol = provider_identity.volume_sol.saturating_add(contract.value);
@@ -967,27 +1011,24 @@ pub fn handler_accept_correction(ctx: Context<AcceptCorrection>) -> Result<()> {
     let contract_provider_stake = contract.provider_stake;
     let contract_currency = contract.currency;
     let contract_id_val = contract.id;
-    let contract_escrow_factor_bps_ac = contract.escrow_factor_bps;
     let corrections_count = dispute.corrections_count;
     let tasks_completed = provider_identity.tasks_completed;
 
-    // Compute escrowed amount (Whitepaper §7.7)
-    let ef_ac = if contract_escrow_factor_bps_ac > 0 { contract_escrow_factor_bps_ac } else { 10_000u16 };
-    let escrow_deposit_ac = (contract_value as u128 * ef_ac as u128 / 10_000) as u64;
-
     // Fee rate by currency (Whitepaper §11.8: 0.5% SWORN, 1.0% SOL)
+    // Fee calculated on full contract_value (provider always receives full value minus fee)
     let fee_bps_disp = if contract_currency == Currency::Sworn {
         ctx.accounts.protocol_config.protocol_fee_sworn_bps as u64
     } else {
         ctx.accounts.protocol_config.protocol_fee_sol_bps as u64
     };
-    let protocol_fee = escrow_deposit_ac * fee_bps_disp / 10_000;
+    let protocol_fee = contract_value * fee_bps_disp / 10_000;
     let fee_treasury = protocol_fee * 70 / 100;
     let fee_insurance = protocol_fee * 20 / 100;
     let fee_burn = protocol_fee.saturating_sub(fee_treasury).saturating_sub(fee_insurance); // 10%
 
-    // Net payment to provider = escrowed amount - protocol fee + stake return (Whitepaper §7.7)
-    let net_payment = escrow_deposit_ac.saturating_sub(protocol_fee);
+    // Net payment to provider = full contract_value - protocol fee + stake return
+    // Provider always receives full value regardless of escrow_factor (top-up done in Phase 1)
+    let net_payment = contract_value.saturating_sub(protocol_fee);
     let provider_release = net_payment
         .checked_add(contract_provider_stake)
         .ok_or(TrustError::MathOverflow)?;
@@ -1211,6 +1252,11 @@ pub struct AcceptCorrection<'info> {
     #[account(mut)]
     pub sworn_mint: UncheckedAccount<'info>,
 
+    /// Requester's token account for SWORN top-up (§7.7).
+    /// CHECK: For SWORN, validated by token CPI (owner == requester). Unused for SOL.
+    #[account(mut)]
+    pub requester_token_account: UncheckedAccount<'info>,
+
     #[account(
         seeds = [b"protocol-config"],
         bump = protocol_config.bump,
@@ -1218,6 +1264,7 @@ pub struct AcceptCorrection<'info> {
     pub protocol_config: Box<Account<'info, ProtocolConfig>>,
 
     pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
 }
 
 // ---------------------------------------------------------------------------
