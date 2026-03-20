@@ -291,4 +291,30 @@ pub mod trust_protocol {
     pub fn migrate_protocol_config(ctx: Context<MigrateProtocolConfig>) -> Result<()> {
         admin::handler_migrate_protocol_config(ctx)
     }
+
+    // === V3 Migrations (realloc for new fields) ===
+
+    /// Migrate ProtocolConfig v2 (146 bytes) -> v3 (186 bytes).
+    /// Adds work-reward halving fields. Must be run FIRST before other v3 migrations.
+    pub fn migrate_config_v3(ctx: Context<MigrateConfigV3>) -> Result<()> {
+        migrate::handler_migrate_config_v3(ctx)
+    }
+
+    /// Migrate AgentIdentity v2 (123 bytes) -> v3 (146 bytes).
+    /// Adds hibernation + dispute_friction fields. Run after migrate_config_v3.
+    pub fn migrate_agent_v3(ctx: Context<MigrateAgentV3>) -> Result<()> {
+        migrate::handler_migrate_agent_v3(ctx)
+    }
+
+    /// Migrate InsurancePool v1 (61 bytes) -> v2 (69 bytes).
+    /// Adds total_active_exposure field. Run after migrate_config_v3.
+    pub fn migrate_insurance_pool(ctx: Context<MigrateInsurancePool>) -> Result<()> {
+        migrate::handler_migrate_insurance_pool(ctx)
+    }
+
+    /// Migrate Dispute v1 (218 bytes) -> v2 (219 bytes).
+    /// Adds private_rounds_count field. Run after migrate_config_v3.
+    pub fn migrate_dispute(ctx: Context<MigrateDispute>) -> Result<()> {
+        migrate::handler_migrate_dispute_v2(ctx)
+    }
 }

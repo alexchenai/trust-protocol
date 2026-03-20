@@ -670,15 +670,17 @@ func DecodeInsuranceClaim(data []byte) (*InsuranceClaim, error) {
 // Whitepaper Section 6: Accumulates 60% of confiscated stakes.
 // Size: 8 disc + 8 + 8 + 4 + 32 + 1 = 61 bytes total.
 type InsurancePool struct {
-	TotalBalance      uint64           `json:"total_balance"`
-	TotalClaimsPaid   uint64           `json:"total_claims_paid"`
-	ActiveClaims      uint32           `json:"active_claims"`
-	Authority         solana.PublicKey `json:"authority"`
-	Bump              uint8            `json:"bump"`
+	TotalBalance        uint64           `json:"total_balance"`
+	TotalClaimsPaid     uint64           `json:"total_claims_paid"`
+	ActiveClaims        uint32           `json:"active_claims"`
+	Authority           solana.PublicKey `json:"authority"`
+	TotalActiveExposure uint64           `json:"total_active_exposure"`
+	Bump                uint8            `json:"bump"`
 }
 
 // InsurancePoolSize is the on-chain account size including 8-byte discriminator.
-const InsurancePoolSize = 8 + 8 + 8 + 4 + 32 + 1 // = 61
+// v2: +8 bytes (total_active_exposure) = 69
+const InsurancePoolSize = 8 + 8 + 8 + 4 + 32 + 8 + 1 // = 69
 
 // DecodeInsurancePool parses raw account data (including 8-byte discriminator).
 func DecodeInsurancePool(data []byte) (*InsurancePool, error) {
@@ -695,6 +697,10 @@ func DecodeInsurancePool(data []byte) (*InsurancePool, error) {
 	o += 4
 	p.Authority = solana.PublicKeyFromBytes(data[o : o+32])
 	o += 32
+	if o+8 <= len(data) {
+		p.TotalActiveExposure = binary.LittleEndian.Uint64(data[o : o+8])
+		o += 8
+	}
 	if o < len(data) {
 		p.Bump = data[o]
 	}

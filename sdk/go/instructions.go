@@ -1275,3 +1275,93 @@ func NewEmitWorkRewardInstruction(
 		DataBytes: disc[:],
 	}
 }
+
+// ---------------------------------------------------------------------------
+// V3 Migration instructions (v2 -> v3 schema upgrade)
+// ---------------------------------------------------------------------------
+
+// NewMigrateConfigV3Instruction builds "migrate_config_v3".
+// Resizes ProtocolConfig from v2 (146 bytes) to v3 (186 bytes).
+// Adds work rewards fields. Must be called FIRST before other v3 migrations.
+func NewMigrateConfigV3Instruction(
+	programID solana.PublicKey,
+	admin solana.PublicKey,
+	protocolConfigPDA solana.PublicKey,
+) solana.Instruction {
+	disc := AnchorDiscriminator("migrate_config_v3")
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(admin).SIGNER().WRITE(),
+			solana.Meta(protocolConfigPDA).WRITE(),
+			solana.Meta(SystemProgramID),
+		},
+		DataBytes: disc[:],
+	}
+}
+
+// NewMigrateAgentV3Instruction builds "migrate_agent_v3".
+// Resizes AgentIdentity from v2 (123 bytes) to v3 (146 bytes).
+// Adds hibernation + dispute_friction fields. Run after migrate_config_v3.
+func NewMigrateAgentV3Instruction(
+	programID solana.PublicKey,
+	admin solana.PublicKey,
+	protocolConfigPDA solana.PublicKey,
+	agentIdentityPDA solana.PublicKey,
+) solana.Instruction {
+	disc := AnchorDiscriminator("migrate_agent_v3")
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(admin).SIGNER().WRITE(),
+			solana.Meta(protocolConfigPDA),
+			solana.Meta(agentIdentityPDA).WRITE(),
+			solana.Meta(SystemProgramID),
+		},
+		DataBytes: disc[:],
+	}
+}
+
+// NewMigrateInsurancePoolV2Instruction builds "migrate_insurance_pool".
+// Resizes InsurancePool from v1 (61 bytes) to v2 (69 bytes).
+// Adds total_active_exposure field. Run after migrate_config_v3.
+func NewMigrateInsurancePoolV2Instruction(
+	programID solana.PublicKey,
+	admin solana.PublicKey,
+	protocolConfigPDA solana.PublicKey,
+	insurancePoolPDA solana.PublicKey,
+) solana.Instruction {
+	disc := AnchorDiscriminator("migrate_insurance_pool")
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(admin).SIGNER().WRITE(),
+			solana.Meta(protocolConfigPDA),
+			solana.Meta(insurancePoolPDA).WRITE(),
+			solana.Meta(SystemProgramID),
+		},
+		DataBytes: disc[:],
+	}
+}
+
+// NewMigrateDisputeV2Instruction builds "migrate_dispute".
+// Resizes Dispute from v1 to v2 (adds private_rounds_count).
+// Run after migrate_config_v3.
+func NewMigrateDisputeV2Instruction(
+	programID solana.PublicKey,
+	admin solana.PublicKey,
+	protocolConfigPDA solana.PublicKey,
+	disputePDA solana.PublicKey,
+) solana.Instruction {
+	disc := AnchorDiscriminator("migrate_dispute")
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(admin).SIGNER().WRITE(),
+			solana.Meta(protocolConfigPDA),
+			solana.Meta(disputePDA).WRITE(),
+			solana.Meta(SystemProgramID),
+		},
+		DataBytes: disc[:],
+	}
+}

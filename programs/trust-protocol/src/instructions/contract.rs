@@ -67,7 +67,7 @@ pub(crate) fn integer_sqrt(n: u64) -> u64 {
 /// Provider must stake: contract_value * factor_stake(TrustScore).
 /// Whitepaper Section 3: Dynamic Staking + Exposure limits (3x capital).
 /// currency: 0=SWORN (SPL token, default), 1=SOL (native lamports). Whitepaper §11.8b.
-pub fn handler_create(ctx: Context<CreateContract>, value: u64, currency: u8) -> Result<()> {
+pub fn handler_create(ctx: Context<CreateContract>, value: u64, currency: u8, spec_hash: [u8; 32]) -> Result<()> {
     let config = &ctx.accounts.protocol_config;
     let provider_identity = &ctx.accounts.provider_identity;
 
@@ -156,6 +156,11 @@ pub fn handler_create(ctx: Context<CreateContract>, value: u64, currency: u8) ->
         1 => Currency::Sol,
         _ => Currency::Sworn, // 0 or any unknown = SWORN (safe default)
     };
+    contract.spec_hash = spec_hash; // §6.1: SHA-256 of input specification
+    contract.corrections_used = 0; // §6.2: no corrections yet
+    contract.max_corrections_contract = config.max_corrections; // §6.1: from protocol config
+    contract.deadline_validation_contract = config.deadline_validation; // §6.1: per-contract validation timeout
+    contract.visibility = 0; // §6.4: private by default
 
     // Increment contract counter
     let config = &mut ctx.accounts.protocol_config;
@@ -184,8 +189,9 @@ pub fn handler_deliver(
     arweave_tx: String,
 ) -> Result<()> {
     let contract = &mut ctx.accounts.contract;
+    // Provider can deliver from Active (first delivery) or CorrectionRequested (re-delivery after rejection)
     require!(
-        contract.status == ContractStatus::Active,
+        contract.status == ContractStatus::Active || contract.status == ContractStatus::CorrectionRequested,
         TrustError::InvalidContractStatus
     );
     require!(
@@ -205,7 +211,7 @@ pub fn handler_deliver(
     let poe = &mut ctx.accounts.proof_of_execution;
     poe.contract = contract.key();
     poe.provider = ctx.accounts.provider.key();
-    poe.input_hash = [0u8; 32]; // Set by requester at contract creation in future version
+    poe.input_hash = contract.spec_hash; // §6.3: SHA-256 of input specification, set at contract creation
     poe.output_hash = output_hash;
     poe.submitted_at = Clock::get()?.unix_timestamp;
     poe.validated = false;
@@ -517,6 +523,51 @@ pub struct CreateContract<'info> {
     pub system_program: Program<'info, System>,
 }
 
+/// Requester rejects a delivery and requests correction (Whitepaper §6.2).
+/// Increments corrections_used. If corrections_used >= max_corrections_contract,
+/// auto-escalates to dispute (Whitepaper §6.2: correction limit reached).
+/// Provider must re-deliver via deliver_contract (status = CorrectionRequested).
+pub fn handler_reject_delivery(
+    ctx: Context<RejectDelivery>,
+    _reason_hash: [u8; 32],
+) -> Result<()> {
+    let contract = &mut ctx.accounts.contract;
+    require!(
+        contract.status == ContractStatus::Delivered,
+        TrustError::InvalidContractStatus
+    );
+    require!(
+        contract.requester == ctx.accounts.requester.key(),
+        TrustError::UnauthorizedRequester
+    );
+
+    // Increment correction counter
+    contract.corrections_used = contract.corrections_used.saturating_add(1);
+
+    // Track correction on provider identity (Whitepaper §8.4: correction_ratio signal)
+    ctx.accounts.provider_identity.corrections_received =
+        ctx.accounts.provider_identity.corrections_received.saturating_add(1);
+
+    if contract.corrections_used >= contract.max_corrections_contract {
+        // Max corrections reached — auto-escalate to dispute (Whitepaper §6.2)
+        contract.status = ContractStatus::Disputed;
+        contract.dispute_level = 1;
+        msg!(
+            "Contract #{} max corrections reached ({}/{}). Auto-escalated to dispute.",
+            contract.id, contract.corrections_used, contract.max_corrections_contract
+        );
+    } else {
+        // Set status to CorrectionRequested — provider must re-deliver
+        contract.status = ContractStatus::CorrectionRequested;
+        msg!(
+            "Contract #{} delivery rejected. Correction {}/{} requested.",
+            contract.id, contract.corrections_used, contract.max_corrections_contract
+        );
+    }
+
+    Ok(())
+}
+
 /// Anyone can call this to trigger a timed-out contract.
 /// Whitepaper Section 3 / Section 5: If provider fails to deliver within 72h,
 /// requester recovers escrow and provider's stake is confiscated (60% insurance,
@@ -533,8 +584,13 @@ pub fn handler_timeout(
         TrustError::InvalidContractStatus
     );
 
-    // Delivery deadline from config (default 72h — Whitepaper §7.5 / §12.4.1)
-    let timeout_seconds = ctx.accounts.protocol_config.deadline_validation;
+    // Provider delivery deadline: use per-contract value if set, else global config
+    // Whitepaper §7.5: provider must deliver within deadline_validation (default 72h)
+    let timeout_seconds = if contract.deadline_validation_contract > 0 {
+        contract.deadline_validation_contract
+    } else {
+        ctx.accounts.protocol_config.deadline_validation
+    };
     require!(
         now > contract.created_at + timeout_seconds,
         TrustError::TimeoutNotReached
@@ -830,6 +886,25 @@ pub struct AcceptContract<'info> {
     pub system_program: Program<'info, System>,
 }
 
+
+#[derive(Accounts)]
+pub struct RejectDelivery<'info> {
+    pub requester: Signer<'info>,
+
+    #[account(
+        mut,
+        constraint = contract.requester == requester.key() @ TrustError::UnauthorizedRequester,
+        constraint = contract.status == ContractStatus::Delivered @ TrustError::InvalidContractStatus,
+    )]
+    pub contract: Box<Account<'info, Contract>>,
+
+    #[account(
+        mut,
+        seeds = [b"agent-identity" as &[u8], contract.provider.as_ref()],
+        bump = provider_identity.bump,
+    )]
+    pub provider_identity: Box<Account<'info, AgentIdentity>>,
+}
 // ---------------------------------------------------------------------------
 // GAP-11: Requester-validation timeout
 // Whitepaper Section 3.5: if requester ignores a Delivered contract for 72h,
@@ -848,8 +923,13 @@ pub fn handler_timeout_delivery(ctx: Context<TimeoutDelivery>) -> Result<()> {
         TrustError::InvalidContractStatus
     );
 
-    // Requester validation timeout from config (default 72h — Whitepaper §7.5 / §12.4.1)
-    let validation_timeout: i64 = ctx.accounts.protocol_config.deadline_validation;
+    // Requester validation timeout: use per-contract value if set, else global config
+    // Whitepaper §7.5 / §12.4.1: deadline_validation, default 72h
+    let validation_timeout: i64 = if contract.deadline_validation_contract > 0 {
+        contract.deadline_validation_contract
+    } else {
+        ctx.accounts.protocol_config.deadline_validation
+    };
     require!(
         now > ctx.accounts.proof_of_execution.submitted_at + validation_timeout,
         TrustError::TimeoutNotReached

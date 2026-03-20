@@ -98,6 +98,11 @@ pub fn handler_propose(ctx: Context<ProposeContract>, value: u64, expiry_seconds
     contract.currency = currency_enum;
     // Store escrow factor (Whitepaper §7.7) — already computed above
     contract.escrow_factor_bps = escrow_factor;
+    contract.spec_hash = [0u8; 32]; // §6.1: spec_hash set later or via separate instruction
+    contract.corrections_used = 0; // §6.2: no corrections yet
+    contract.max_corrections_contract = config.max_corrections; // §6.1: from protocol config
+    contract.deadline_validation_contract = config.deadline_validation; // §6.1: per-contract validation timeout
+    contract.visibility = 0; // §6.4: private by default
 
     // Increment contract counter
     let config = &mut ctx.accounts.protocol_config;
