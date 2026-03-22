@@ -290,14 +290,14 @@ pub struct ProposeContract<'info> {
         seeds = [b"agent-identity" as &[u8], provider.key().as_ref()],
         bump = provider_identity.bump,
     )]
-    pub provider_identity: Account<'info, AgentIdentity>,
+    pub provider_identity: Box<Account<'info, AgentIdentity>>,
 
     /// Requester identity — used to calculate escrow_factor (Whitepaper §7.7)
     #[account(
         seeds = [b"agent-identity" as &[u8], requester.key().as_ref()],
         bump = requester_identity.bump,
     )]
-    pub requester_identity: Account<'info, AgentIdentity>,
+    pub requester_identity: Box<Account<'info, AgentIdentity>>,
 
     #[account(
         init,
@@ -306,14 +306,14 @@ pub struct ProposeContract<'info> {
         seeds = [b"contract" as &[u8], &protocol_config.total_contracts.to_le_bytes()],
         bump,
     )]
-    pub contract: Account<'info, Contract>,
+    pub contract: Box<Account<'info, Contract>>,
 
     #[account(
         mut,
         constraint = requester_token_account.owner == requester.key(),
         constraint = requester_token_account.mint == protocol_config.sworn_mint,
     )]
-    pub requester_token_account: Account<'info, TokenAccount>,
+    pub requester_token_account: Box<Account<'info, TokenAccount>>,
 
     /// Escrow vault PDA - holds requester's deposit until provider accepts or proposal expires.
     #[account(
@@ -324,19 +324,19 @@ pub struct ProposeContract<'info> {
         seeds = [b"escrow" as &[u8], &protocol_config.total_contracts.to_le_bytes()],
         bump,
     )]
-    pub escrow_vault: Account<'info, TokenAccount>,
+    pub escrow_vault: Box<Account<'info, TokenAccount>>,
 
     #[account(
         constraint = sworn_mint.key() == protocol_config.sworn_mint,
     )]
-    pub sworn_mint: Account<'info, Mint>,
+    pub sworn_mint: Box<Account<'info, Mint>>,
 
     #[account(
         mut,
         seeds = [b"protocol-config"],
         bump = protocol_config.bump,
     )]
-    pub protocol_config: Account<'info, ProtocolConfig>,
+    pub protocol_config: Box<Account<'info, ProtocolConfig>>,
 
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
