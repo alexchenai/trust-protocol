@@ -15,7 +15,7 @@ trust_protocol = "CSBAc1SiMALr4rnuCoB17BsddzthB4RAhjibGvyt6p6S"
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "Localnet"
+cluster = "Devnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
