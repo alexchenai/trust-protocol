@@ -176,13 +176,18 @@ type ProtocolConfig struct {
 	Bump                    uint8            `json:"bump"`
 }
 
-// ProtocolConfigSize is the on-chain size including Anchor discriminator.
+// ProtocolConfigSize is the FULL on-chain size including all fields.
+// Older accounts may be smaller (146 bytes = base without work-reward fields).
+// The decode function handles both via conditional guards.
 const ProtocolConfigSize = 186
+
+// ProtocolConfigMinSize is the minimum valid account size (base governable fields).
+const ProtocolConfigMinSize = 146
 
 // DecodeProtocolConfig parses raw account data (including 8-byte discriminator).
 func DecodeProtocolConfig(data []byte) (*ProtocolConfig, error) {
-	if len(data) < ProtocolConfigSize {
-		return nil, fmt.Errorf("protocol config data too short: %d < %d", len(data), ProtocolConfigSize)
+	if len(data) < ProtocolConfigMinSize {
+		return nil, fmt.Errorf("protocol config data too short: %d < %d", len(data), ProtocolConfigMinSize)
 	}
 	o := 8
 	c := &ProtocolConfig{}
