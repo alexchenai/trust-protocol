@@ -76,15 +76,15 @@ pub mod trust_protocol {
     /// Create contract. Provider stakes based on TrustScore.
     /// stake = value * factor_stake(score). Score 0 = 100%, Score 100 = 5%.
     /// currency: 0=SWORN (default), 1=SOL. Whitepaper §11.8b.
-    pub fn create_contract(ctx: Context<CreateContract>, value: u64, currency: u8, spec_hash: [u8; 32]) -> Result<()> {
-        contract::handler_create(ctx, value, currency, spec_hash)
+    pub fn create_contract(ctx: Context<CreateContract>, value: u64, currency: u8, spec_hash: [u8; 32], escrow_factor_bps: u16) -> Result<()> {
+        contract::handler_create(ctx, value, currency, spec_hash, escrow_factor_bps)
     }
 
     /// Propose a contract. Only requester signs; deposits escrow.
     /// Provider must call accept_proposal to activate.
     /// currency: 0=SWORN (SPL token), 1=SOL (native lamports). Whitepaper Section 11.8b.
-    pub fn propose_contract(ctx: Context<ProposeContract>, value: u64, expiry_seconds: u64, currency: u8) -> Result<()> {
-        proposal::handler_propose(ctx, value, expiry_seconds, currency)
+    pub fn propose_contract(ctx: Context<ProposeContract>, value: u64, expiry_seconds: u64, currency: u8, escrow_factor_bps: u16) -> Result<()> {
+        proposal::handler_propose(ctx, value, expiry_seconds, currency, escrow_factor_bps)
     }
 
     /// Provider accepts a proposed contract by depositing stake.

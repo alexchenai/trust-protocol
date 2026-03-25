@@ -31,6 +31,7 @@ pub(crate) fn calculate_stake_factor(trust_score: u16, min_bps: u16, _max_bps: u
 /// Whitepaper §7.7: escrow_factor(ts) = max(0.30, 1.0 - 0.70*(ts/100)^1.5)
 /// Returns basis points (10000 = 100%, 3000 = 30% floor).
 /// New requesters (TS=0) always deposit 100%. Experienced requesters pay less.
+#[allow(dead_code)]
 pub(crate) fn calculate_escrow_factor(trust_score: u16) -> u16 {
     if trust_score == 0 {
         return 10_000; // 100% — no history, full escrow required
@@ -67,7 +68,7 @@ pub(crate) fn integer_sqrt(n: u64) -> u64 {
 /// Provider must stake: contract_value * factor_stake(TrustScore).
 /// Whitepaper Section 3: Dynamic Staking + Exposure limits (3x capital).
 /// currency: 0=SWORN (SPL token, default), 1=SOL (native lamports). Whitepaper §11.8b.
-pub fn handler_create(ctx: Context<CreateContract>, value: u64, currency: u8, spec_hash: [u8; 32]) -> Result<()> {
+pub fn handler_create(ctx: Context<CreateContract>, value: u64, currency: u8, spec_hash: [u8; 32], escrow_factor_bps: u16) -> Result<()> {
     let config = &ctx.accounts.protocol_config;
     let provider_identity = &ctx.accounts.provider_identity;
 
@@ -99,10 +100,15 @@ pub fn handler_create(ctx: Context<CreateContract>, value: u64, currency: u8, sp
         .ok_or(TrustError::MathOverflow)?
         / 10_000;
 
-    // Calculate requester escrow factor from requester TrustScore (Whitepaper §7.7)
-    // New requesters (TS=0) deposit 100%; experienced requesters deposit less (floor 30%)
-    let requester_ts = ctx.accounts.requester_identity.trust_score;
-    let escrow_factor = calculate_escrow_factor(requester_ts);
+    // Escrow factor: passed as instruction data to reduce account count (BPF stack fix).
+    // Whitepaper §7.7: range [3000, 10000] bps. 0 defaults to 10000 (full escrow).
+    let escrow_factor = if escrow_factor_bps == 0 || escrow_factor_bps > 10_000 {
+        10_000u16
+    } else if escrow_factor_bps < 3_000 {
+        3_000u16
+    } else {
+        escrow_factor_bps
+    };
     let escrow_deposit = (value as u128)
         .checked_mul(escrow_factor as u128)
         .ok_or(TrustError::MathOverflow)?
@@ -465,13 +471,6 @@ pub struct CreateContract<'info> {
     )]
     pub provider_identity: Box<Account<'info, AgentIdentity>>,
 
-    /// Requester identity — used to calculate escrow_factor (Whitepaper §7.7)
-    #[account(
-        seeds = [b"agent-identity" as &[u8], requester.key().as_ref()],
-        bump = requester_identity.bump,
-    )]
-    pub requester_identity: Box<Account<'info, AgentIdentity>>,
-
     #[account(
         init,
         payer = requester,
@@ -798,7 +797,6 @@ pub struct DeliverContract<'info> {
     #[account(
         mut,
         constraint = contract.provider == provider.key() @ TrustError::UnauthorizedProvider,
-        constraint = contract.status == ContractStatus::Active @ TrustError::InvalidContractStatus,
     )]
     pub contract: Account<'info, Contract>,
 

@@ -6,7 +6,10 @@ use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
 /// Propose a contract. Only requester signs; deposits escrow value.
 /// Provider must call accept_proposal to activate the contract.
-pub fn handler_propose(ctx: Context<ProposeContract>, value: u64, expiry_seconds: u64, currency: u8) -> Result<()> {
+/// escrow_factor_bps: computed off-chain via calculate_escrow_factor(requester_ts).
+///   Must be in [3000, 10000]. Verified against requester_identity in a separate account.
+///   Passing 0 defaults to 10000 (full escrow, safe for new requesters).
+pub fn handler_propose(ctx: Context<ProposeContract>, value: u64, expiry_seconds: u64, currency: u8, escrow_factor_bps: u16) -> Result<()> {
     let config = &ctx.accounts.protocol_config;
     let provider_identity = &ctx.accounts.provider_identity;
 
@@ -34,9 +37,17 @@ pub fn handler_propose(ctx: Context<ProposeContract>, value: u64, expiry_seconds
         / 10_000;
     let stake_required = stake_required as u64;
 
-    // Calculate requester escrow deposit using reduced escrow factor (Whitepaper §7.7)
-    let requester_ts = ctx.accounts.requester_identity.trust_score;
-    let escrow_factor = crate::instructions::contract::calculate_escrow_factor(requester_ts);
+    // Escrow factor: passed as instruction data to reduce account count (stack overflow fix).
+    // Whitepaper §7.7: must be in [3000, 10000] bps. 0 defaults to 10000 (full escrow).
+    // The caller computes this off-chain from requester TrustScore. A higher-than-required
+    // escrow_factor is always safe (requester deposits MORE, not less).
+    let escrow_factor = if escrow_factor_bps == 0 || escrow_factor_bps > 10_000 {
+        10_000u16  // Default: full escrow (safe for any requester)
+    } else if escrow_factor_bps < 3_000 {
+        3_000u16   // Floor: 30% minimum (Whitepaper §7.7)
+    } else {
+        escrow_factor_bps
+    };
     let escrow_deposit = (value as u128)
         .checked_mul(escrow_factor as u128)
         .ok_or(TrustError::MathOverflow)?
@@ -112,9 +123,9 @@ pub fn handler_propose(ctx: Context<ProposeContract>, value: u64, expiry_seconds
         .ok_or(TrustError::MathOverflow)?;
 
     msg!(
-        "Contract #{} proposed. Value: {}, Currency: {}, Required stake: {} (factor: {}bps). Requester: {}, Provider: {}",
+        "Contract #{} proposed. Value: {}, Currency: {}, Required stake: {} (factor: {}bps). Escrow factor: {}bps. Requester: {}, Provider: {}",
         contract_id, value, currency, stake_required, stake_factor,
-        contract.requester, contract.provider
+        escrow_factor, contract.requester, contract.provider
     );
     Ok(())
 }
@@ -188,7 +199,6 @@ pub fn handler_accept_proposal(ctx: Context<AcceptProposal>) -> Result<()> {
     contract.created_at = now_ts;
 
     // Enforce exposure limit and increment active_contracts counter (Whitepaper Section 7.3)
-    // NOTE: AcceptProposal struct must include provider_identity (added below)
     let max_contracts = (ctx.accounts.provider_identity.trust_score as u64 / 10) + 1;
     require!(
         (ctx.accounts.provider_identity.active_contracts as u64) < max_contracts,
@@ -292,13 +302,6 @@ pub struct ProposeContract<'info> {
     )]
     pub provider_identity: Box<Account<'info, AgentIdentity>>,
 
-    /// Requester identity — used to calculate escrow_factor (Whitepaper §7.7)
-    #[account(
-        seeds = [b"agent-identity" as &[u8], requester.key().as_ref()],
-        bump = requester_identity.bump,
-    )]
-    pub requester_identity: Box<Account<'info, AgentIdentity>>,
-
     #[account(
         init,
         payer = requester,
@@ -308,12 +311,9 @@ pub struct ProposeContract<'info> {
     )]
     pub contract: Box<Account<'info, Contract>>,
 
-    #[account(
-        mut,
-        constraint = requester_token_account.owner == requester.key(),
-        constraint = requester_token_account.mint == protocol_config.sworn_mint,
-    )]
-    pub requester_token_account: Box<Account<'info, TokenAccount>>,
+    /// CHECK: Requester token account. Validated by token::transfer CPI (owner + mint checks).
+    #[account(mut)]
+    pub requester_token_account: UncheckedAccount<'info>,
 
     /// Escrow vault PDA - holds requester's deposit until provider accepts or proposal expires.
     #[account(

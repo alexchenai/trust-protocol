@@ -24,9 +24,13 @@ func CalculateTrustScore(a *AgentIdentity, monthsSinceCreation, monthsInactive, 
 	correctionRatio := 0.0
 	if totalTasks > 0 {
 		disputeLossRatio = float64(a.DisputesLost) / totalTasks
-		correctionRatio = float64(a.CorrectionsReceived) / totalTasks
 	}
-	// Quality: Q = max(0, 1 - 2*C_r - 5*D_L) * min(1, N/20)  (whitepaper §4.3)
+	// Whitepaper §8.4: correction_ratio = corrected_deliveries / total_deliveries (not total_tasks)
+	totalDeliveries := float64(a.TotalDeliveries)
+	if totalDeliveries > 0 {
+		correctionRatio = float64(a.CorrectionsReceived) / totalDeliveries
+	}
+	// Quality: Q = max(0, 1 - 2*C_r - 5*D_L) * min(1, N/20)  (whitepaper §8.1/§8.4)
 	qualityFactor := math.Max(0, 1.0-2*correctionRatio-5*disputeLossRatio) * math.Min(1.0, totalTasks/20.0)
 
 	ageFactor := math.Min(1.0, monthsSinceCreation/24.0)

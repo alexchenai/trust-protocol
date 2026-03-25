@@ -151,7 +151,7 @@ pub struct MigrateBondVault<'info> {
         bump = protocol_config.bump,
         constraint = protocol_config.admin == admin.key(),
     )]
-    pub protocol_config: Account<'info, ProtocolConfig>,
+    pub protocol_config: Box<Account<'info, ProtocolConfig>>,
 
     /// Old bond vault (will be closed)
     #[account(
@@ -160,7 +160,7 @@ pub struct MigrateBondVault<'info> {
         bump,
         token::authority = vault_authority,
     )]
-    pub old_bond_vault: Account<'info, TokenAccount>,
+    pub old_bond_vault: Box<Account<'info, TokenAccount>>,
 
     /// Admin's token account for the OLD mint (receives drained tokens)
     #[account(
@@ -168,10 +168,10 @@ pub struct MigrateBondVault<'info> {
         constraint = admin_old_token_account.owner == admin.key(),
         constraint = admin_old_token_account.mint == protocol_config.sworn_mint,
     )]
-    pub admin_old_token_account: Account<'info, TokenAccount>,
+    pub admin_old_token_account: Box<Account<'info, TokenAccount>>,
 
     /// The new SWORN mint (v2 with metadata)
-    pub new_sworn_mint: Account<'info, Mint>,
+    pub new_sworn_mint: Box<Account<'info, Mint>>,
 
     /// New bond vault PDA — initialized with new mint.
     /// Uses different seeds ("bond-vault-v2") since old PDA can't be reused in same TX.
@@ -183,7 +183,7 @@ pub struct MigrateBondVault<'info> {
         seeds = [b"bond-vault-v2"],
         bump,
     )]
-    pub new_bond_vault: Account<'info, TokenAccount>,
+    pub new_bond_vault: Box<Account<'info, TokenAccount>>,
 
     /// CHECK: PDA authority for both vaults
     #[account(
