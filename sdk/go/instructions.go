@@ -1365,3 +1365,153 @@ func NewMigrateDisputeV2Instruction(
 		DataBytes: disc[:],
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Public Contract Bidding (Whitepaper §6.5)
+// ---------------------------------------------------------------------------
+
+// NewPlaceBidInstruction builds "place_bid".
+func NewPlaceBidInstruction(
+	programID solana.PublicKey,
+	bidder solana.PublicKey,
+	bidderIdentityPDA solana.PublicKey,
+	contractPDA solana.PublicKey,
+	bidPDA solana.PublicKey,
+	protocolConfigPDA solana.PublicKey,
+	proposedPrice uint64,
+	proposedDeadline uint64,
+	stakeOffered uint64,
+	messageHash [32]byte,
+	slaDeadlineHours uint64,
+) solana.Instruction {
+	disc := AnchorDiscriminator("place_bid")
+	data := make([]byte, 8+8+8+8+32+8)
+	copy(data[:8], disc[:])
+	binary.LittleEndian.PutUint64(data[8:16], proposedPrice)
+	binary.LittleEndian.PutUint64(data[16:24], proposedDeadline)
+	binary.LittleEndian.PutUint64(data[24:32], stakeOffered)
+	copy(data[32:64], messageHash[:])
+	binary.LittleEndian.PutUint64(data[64:72], slaDeadlineHours)
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(bidder).SIGNER().WRITE(),
+			solana.Meta(bidderIdentityPDA),
+			solana.Meta(contractPDA).WRITE(),
+			solana.Meta(bidPDA).WRITE(),
+			solana.Meta(protocolConfigPDA).WRITE(),
+			solana.Meta(SystemProgramID),
+		},
+		DataBytes: data,
+	}
+}
+
+// NewWithdrawBidInstruction builds "withdraw_bid".
+func NewWithdrawBidInstruction(
+	programID solana.PublicKey,
+	bidder solana.PublicKey,
+	bidPDA solana.PublicKey,
+	bidderIdentityPDA solana.PublicKey,
+) solana.Instruction {
+	disc := AnchorDiscriminator("withdraw_bid")
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(bidder).SIGNER().WRITE(),
+			solana.Meta(bidPDA).WRITE(),
+			solana.Meta(bidderIdentityPDA),
+		},
+		DataBytes: disc[:],
+	}
+}
+
+// NewSelectBidInstruction builds "select_bid".
+func NewSelectBidInstruction(
+	programID solana.PublicKey,
+	requester solana.PublicKey,
+	contractPDA solana.PublicKey,
+	bidPDA solana.PublicKey,
+	bidderAuthority solana.PublicKey,
+) solana.Instruction {
+	disc := AnchorDiscriminator("select_bid")
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(requester).SIGNER().WRITE(),
+			solana.Meta(contractPDA).WRITE(),
+			solana.Meta(bidPDA),
+			solana.Meta(bidderAuthority),
+		},
+		DataBytes: disc[:],
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Staking-Based Liquidity Pool (Whitepaper §11.10)
+// ---------------------------------------------------------------------------
+
+// NewDepositStakeInstruction builds "deposit_stake".
+func NewDepositStakeInstruction(
+	programID solana.PublicKey,
+	agent solana.PublicKey,
+	agentIdentityPDA solana.PublicKey,
+	stakeManagerPDA solana.PublicKey,
+	protocolConfigPDA solana.PublicKey,
+	amount uint64,
+) solana.Instruction {
+	disc := AnchorDiscriminator("deposit_stake")
+	data := make([]byte, 8+8)
+	copy(data[:8], disc[:])
+	binary.LittleEndian.PutUint64(data[8:16], amount)
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(agent).SIGNER().WRITE(),
+			solana.Meta(agentIdentityPDA),
+			solana.Meta(stakeManagerPDA).WRITE(),
+			solana.Meta(protocolConfigPDA),
+			solana.Meta(SystemProgramID),
+		},
+		DataBytes: data,
+	}
+}
+
+// NewWithdrawStakeInstruction builds "withdraw_stake".
+func NewWithdrawStakeInstruction(
+	programID solana.PublicKey,
+	agent solana.PublicKey,
+	stakeManagerPDA solana.PublicKey,
+	amount uint64,
+) solana.Instruction {
+	disc := AnchorDiscriminator("withdraw_stake")
+	data := make([]byte, 8+8)
+	copy(data[:8], disc[:])
+	binary.LittleEndian.PutUint64(data[8:16], amount)
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(agent).SIGNER().WRITE(),
+			solana.Meta(stakeManagerPDA).WRITE(),
+		},
+		DataBytes: data,
+	}
+}
+
+// NewHarvestLpFeesInstruction builds "harvest_lp_fees".
+func NewHarvestLpFeesInstruction(
+	programID solana.PublicKey,
+	agent solana.PublicKey,
+	stakeManagerPDA solana.PublicKey,
+	protocolConfigPDA solana.PublicKey,
+) solana.Instruction {
+	disc := AnchorDiscriminator("harvest_lp_fees")
+	return &solana.GenericInstruction{
+		ProgID: programID,
+		AccountValues: solana.AccountMetaSlice{
+			solana.Meta(agent).SIGNER().WRITE(),
+			solana.Meta(stakeManagerPDA).WRITE(),
+			solana.Meta(protocolConfigPDA),
+		},
+		DataBytes: disc[:],
+	}
+}

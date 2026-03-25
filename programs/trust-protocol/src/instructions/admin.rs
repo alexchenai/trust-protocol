@@ -350,6 +350,11 @@ pub fn handler_update_config(ctx: Context<UpdateConfig>, params: UpdateConfigPar
     if let Some(v) = params.protocol_fee_sol_bps   { config.protocol_fee_sol_bps = v; }
     if let Some(v) = params.max_corrections        { config.max_corrections = v; }
     if let Some(v) = params.deadline_validation    { config.deadline_validation = v; }
+    if let Some(v) = params.reserve_ratio_bps      { config.reserve_ratio_bps = v; }
+    if let Some(v) = params.lp_fee_staker_bps      { config.lp_fee_staker_bps = v; }
+    if let Some(v) = params.bid_weight_price_bps   { config.bid_weight_price_bps = v; }
+    if let Some(v) = params.bid_weight_trust_bps   { config.bid_weight_trust_bps = v; }
+    if let Some(v) = params.bid_weight_speed_bps   { config.bid_weight_speed_bps = v; }
     msg!("ProtocolConfig updated");
     Ok(())
 }
@@ -370,6 +375,16 @@ pub struct UpdateConfigParams {
     pub max_corrections: Option<u8>,
     /// Requester validation timeout seconds (86400-604800). sect 7.5.
     pub deadline_validation: Option<i64>,
+    /// SBLP reserve ratio bps (1000-8000). sect 11.10.
+    pub reserve_ratio_bps: Option<u16>,
+    /// SBLP LP fee staker share bps (5000-9000). sect 11.10.
+    pub lp_fee_staker_bps: Option<u16>,
+    /// Bid weight: price factor bps. sect 6.5.
+    pub bid_weight_price_bps: Option<u16>,
+    /// Bid weight: trust factor bps. sect 6.5.
+    pub bid_weight_trust_bps: Option<u16>,
+    /// Bid weight: speed factor bps. sect 6.5.
+    pub bid_weight_speed_bps: Option<u16>,
 }
 
 #[derive(Accounts)]

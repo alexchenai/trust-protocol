@@ -99,6 +99,24 @@ func FindInsuranceClaimPDA(programID solana.PublicKey, contractPDA solana.Public
 	return addr, bump
 }
 
+// FindBidPDA derives the bid PDA for a contract + bidder.
+// Seeds: [b"bid", contract_key, bidder_key]
+func FindBidPDA(programID solana.PublicKey, contractPDA solana.PublicKey, bidder solana.PublicKey) (solana.PublicKey, uint8) {
+	addr, bump, _ := solana.FindProgramAddress(
+		[][]byte{[]byte("bid"), contractPDA.Bytes(), bidder.Bytes()}, programID,
+	)
+	return addr, bump
+}
+
+// FindStakeManagerPDA derives the stake-manager PDA for an agent.
+// Seeds: [b"stake-manager", agent_key]
+func FindStakeManagerPDA(programID solana.PublicKey, agent solana.PublicKey) (solana.PublicKey, uint8) {
+	addr, bump, _ := solana.FindProgramAddress(
+		[][]byte{[]byte("stake-manager"), agent.Bytes()}, programID,
+	)
+	return addr, bump
+}
+
 // DeriveATA derives the Associated Token Account for a wallet + mint.
 func DeriveATA(wallet, mint solana.PublicKey) (solana.PublicKey, error) {
 	ataProgramID := solana.MustPublicKeyFromBase58("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")

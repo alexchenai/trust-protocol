@@ -173,13 +173,19 @@ type ProtocolConfig struct {
 	BaseWorkReward          uint64           `json:"base_work_reward"`
 	HalvingInterval         uint64           `json:"halving_interval"`
 	MaxWorkRewards          uint64           `json:"max_work_rewards"`
+	ReserveRatioBps         uint16           `json:"reserve_ratio_bps"`
+	LpFeeStakerBps          uint16           `json:"lp_fee_staker_bps"`
+	BidWeightPriceBps       uint16           `json:"bid_weight_price_bps"`
+	BidWeightTrustBps       uint16           `json:"bid_weight_trust_bps"`
+	BidWeightSpeedBps       uint16           `json:"bid_weight_speed_bps"`
 	Bump                    uint8            `json:"bump"`
 }
 
 // ProtocolConfigSize is the FULL on-chain size including all fields.
 // Older accounts may be smaller (146 bytes = base without work-reward fields).
 // The decode function handles both via conditional guards.
-const ProtocolConfigSize = 186
+// v4: +10 bytes (5 x u16 for SBLP + bidding weights) = 196
+const ProtocolConfigSize = 196
 
 // ProtocolConfigMinSize is the minimum valid account size (base governable fields).
 const ProtocolConfigMinSize = 146
@@ -256,6 +262,26 @@ func DecodeProtocolConfig(data []byte) (*ProtocolConfig, error) {
 	if o+8 <= len(data) {
 		c.MaxWorkRewards = binary.LittleEndian.Uint64(data[o : o+8])
 		o += 8
+	}
+	if o+2 <= len(data) {
+		c.ReserveRatioBps = binary.LittleEndian.Uint16(data[o : o+2])
+		o += 2
+	}
+	if o+2 <= len(data) {
+		c.LpFeeStakerBps = binary.LittleEndian.Uint16(data[o : o+2])
+		o += 2
+	}
+	if o+2 <= len(data) {
+		c.BidWeightPriceBps = binary.LittleEndian.Uint16(data[o : o+2])
+		o += 2
+	}
+	if o+2 <= len(data) {
+		c.BidWeightTrustBps = binary.LittleEndian.Uint16(data[o : o+2])
+		o += 2
+	}
+	if o+2 <= len(data) {
+		c.BidWeightSpeedBps = binary.LittleEndian.Uint16(data[o : o+2])
+		o += 2
 	}
 	if o < len(data) {
 		c.Bump = data[o]
@@ -747,4 +773,108 @@ func DecodeInsurancePool(data []byte) (*InsurancePool, error) {
 		p.Bump = data[o]
 	}
 	return p, nil
+}
+
+// ---------------------------------------------------------------------------
+// Bid (Whitepaper §6.5: Public Contract Bidding)
+// ---------------------------------------------------------------------------
+
+// Bid represents a bid on a public contract.
+// Seeds: [b"bid", contract_key, bidder_key]
+type Bid struct {
+	BidID            uint64           `json:"bid_id"`
+	TaskID           solana.PublicKey  `json:"task_id"`
+	Bidder           solana.PublicKey  `json:"bidder"`
+	ProposedPrice    uint64           `json:"proposed_price"`
+	ProposedDeadline uint64           `json:"proposed_deadline"`
+	BidderTS         uint16           `json:"bidder_ts"`
+	StakeOffered     uint64           `json:"stake_offered"`
+	MessageHash      [32]byte         `json:"message_hash"`
+	Timestamp        int64            `json:"timestamp"`
+	BidScore         uint64           `json:"bid_score"`
+	Active           bool             `json:"active"`
+	Bump             uint8            `json:"bump"`
+}
+
+// BidSize is the on-chain size including 8-byte Anchor discriminator.
+// 8 disc + 8(bid_id) + 32(task_id) + 32(bidder) + 8(proposed_price) + 8(proposed_deadline)
+// + 2(bidder_ts) + 8(stake_offered) + 32(message_hash) + 8(timestamp) + 8(bid_score)
+// + 1(active) + 1(bump) = 156
+const BidSize = 156
+
+// DecodeBid parses raw account data (including 8-byte discriminator).
+func DecodeBid(data []byte) (*Bid, error) {
+	if len(data) < BidSize {
+		return nil, fmt.Errorf("bid data too short: %d < %d", len(data), BidSize)
+	}
+	o := 8 // skip discriminator
+	b := &Bid{}
+	b.BidID = binary.LittleEndian.Uint64(data[o : o+8])
+	o += 8
+	b.TaskID = solana.PublicKeyFromBytes(data[o : o+32])
+	o += 32
+	b.Bidder = solana.PublicKeyFromBytes(data[o : o+32])
+	o += 32
+	b.ProposedPrice = binary.LittleEndian.Uint64(data[o : o+8])
+	o += 8
+	b.ProposedDeadline = binary.LittleEndian.Uint64(data[o : o+8])
+	o += 8
+	b.BidderTS = binary.LittleEndian.Uint16(data[o : o+2])
+	o += 2
+	b.StakeOffered = binary.LittleEndian.Uint64(data[o : o+8])
+	o += 8
+	copy(b.MessageHash[:], data[o:o+32])
+	o += 32
+	b.Timestamp = int64(binary.LittleEndian.Uint64(data[o : o+8]))
+	o += 8
+	b.BidScore = binary.LittleEndian.Uint64(data[o : o+8])
+	o += 8
+	b.Active = data[o] == 1
+	o++
+	b.Bump = data[o]
+	return b, nil
+}
+
+// ---------------------------------------------------------------------------
+// StakeManager (Whitepaper §11.10: Staking-Based Liquidity Pool)
+// ---------------------------------------------------------------------------
+
+// StakeManager represents an agent SBLP stake position.
+// Seeds: [b"stake-manager", agent_key]
+type StakeManager struct {
+	Agent          solana.PublicKey `json:"agent"`
+	TotalStaked    uint64          `json:"total_staked"`
+	LiquidReserve  uint64          `json:"liquid_reserve"`
+	LpAllocation   uint64          `json:"lp_allocation"`
+	LpFeesEarned   uint64          `json:"lp_fees_earned"`
+	LastFeeHarvest int64           `json:"last_fee_harvest"`
+	Bump           uint8           `json:"bump"`
+}
+
+// StakeManagerSize is the on-chain size including 8-byte Anchor discriminator.
+// 8 disc + 32(agent) + 8(total_staked) + 8(liquid_reserve) + 8(lp_allocation)
+// + 8(lp_fees_earned) + 8(last_fee_harvest) + 1(bump) = 81
+const StakeManagerSize = 81
+
+// DecodeStakeManager parses raw account data (including 8-byte discriminator).
+func DecodeStakeManager(data []byte) (*StakeManager, error) {
+	if len(data) < StakeManagerSize {
+		return nil, fmt.Errorf("stake_manager data too short: %d < %d", len(data), StakeManagerSize)
+	}
+	o := 8 // skip discriminator
+	s := &StakeManager{}
+	s.Agent = solana.PublicKeyFromBytes(data[o : o+32])
+	o += 32
+	s.TotalStaked = binary.LittleEndian.Uint64(data[o : o+8])
+	o += 8
+	s.LiquidReserve = binary.LittleEndian.Uint64(data[o : o+8])
+	o += 8
+	s.LpAllocation = binary.LittleEndian.Uint64(data[o : o+8])
+	o += 8
+	s.LpFeesEarned = binary.LittleEndian.Uint64(data[o : o+8])
+	o += 8
+	s.LastFeeHarvest = int64(binary.LittleEndian.Uint64(data[o : o+8]))
+	o += 8
+	s.Bump = data[o]
+	return s, nil
 }

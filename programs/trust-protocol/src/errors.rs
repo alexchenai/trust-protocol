@@ -80,4 +80,26 @@ pub enum TrustError {
     ClaimExceedsPoolCap,
     #[msg("InsurancePool in crisis (solvency < 0.5): only proven fraud claims accepted (§11.5c)")]
     InsurancePoolCrisis,
+    #[msg("Contract is not public (visibility must be 1 for bidding, §6.5)")]
+    ContractNotPublic,
+    #[msg("Contract is not in Created/Proposed status (cannot bid on active contracts)")]
+    ContractNotBiddable,
+    #[msg("Proposed price exceeds contract escrow amount")]
+    BidPriceTooHigh,
+    #[msg("Bid stake offered is below the minimum required for bidder TrustScore")]
+    BidStakeInsufficient,
+    #[msg("Bid not found or already withdrawn")]
+    BidNotActive,
+    #[msg("Only the bid owner can withdraw this bid")]
+    UnauthorizedBidder,
+    #[msg("Only the contract requester can select a bid")]
+    UnauthorizedBidSelector,
+    #[msg("Insufficient liquid reserve for withdrawal (§11.10)")]
+    InsufficientLiquidReserve,
+    #[msg("Withdrawal amount exceeds staked balance")]
+    WithdrawExceedsStake,
+    #[msg("No LP fees to harvest")]
+    NoFeesToHarvest,
+    #[msg("Deposit amount must be greater than zero")]
+    ZeroDeposit,
 }

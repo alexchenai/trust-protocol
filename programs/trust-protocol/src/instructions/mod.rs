@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod bidding;
 pub mod contract;
 pub mod dispute;
 pub mod identity;
@@ -6,9 +7,11 @@ pub mod initialize;
 pub mod insurance;
 pub mod proposal;
 pub mod migrate;
+pub mod stake_manager;
 pub mod work_rewards;
 
 pub use admin::*;
+pub use bidding::*;
 pub use contract::*;
 pub use dispute::*;
 pub use identity::*;
@@ -16,4 +19,5 @@ pub use initialize::*;
 pub use migrate::*;
 pub use insurance::*;
 pub use proposal::*;
+pub use stake_manager::*;
 pub use work_rewards::*;

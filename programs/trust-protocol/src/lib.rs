@@ -244,6 +244,48 @@ pub mod trust_protocol {
         work_rewards::handler_emit_work_reward(ctx)
     }
 
+    // === Public Contract Bidding (Whitepaper §6.5) ===
+
+    /// Place a bid on a public contract. Computes bid_score on-chain.
+    /// bid_score = W_price * price_score + W_trust * trust_norm + W_speed * speed_score
+    pub fn place_bid(
+        ctx: Context<PlaceBid>,
+        proposed_price: u64,
+        proposed_deadline: u64,
+        stake_offered: u64,
+        message_hash: [u8; 32],
+        sla_deadline_hours: u64,
+    ) -> Result<()> {
+        bidding::handler_place_bid(ctx, proposed_price, proposed_deadline, stake_offered, message_hash, sla_deadline_hours)
+    }
+
+    /// Withdraw (cancel) a bid on a public contract.
+    pub fn withdraw_bid(ctx: Context<WithdrawBid>) -> Result<()> {
+        bidding::handler_withdraw_bid(ctx)
+    }
+
+    /// Requester selects a winning bid and assigns the provider.
+    pub fn select_bid(ctx: Context<SelectBid>) -> Result<()> {
+        bidding::handler_select_bid(ctx)
+    }
+
+    // === Staking-Based Liquidity Pool (Whitepaper §11.10) ===
+
+    /// Deposit SWORN into SBLP. Split: 40% liquid reserve, 60% LP allocation.
+    pub fn deposit_stake(ctx: Context<DepositStake>, amount: u64) -> Result<()> {
+        stake_manager::handler_deposit_stake(ctx, amount)
+    }
+
+    /// Withdraw SWORN from liquid reserve.
+    pub fn withdraw_stake(ctx: Context<WithdrawStake>, amount: u64) -> Result<()> {
+        stake_manager::handler_withdraw_stake(ctx, amount)
+    }
+
+    /// Harvest LP fees. Distribution: 70% staker, 20% treasury, 10% insurance.
+    pub fn harvest_lp_fees(ctx: Context<HarvestLpFees>) -> Result<()> {
+        stake_manager::handler_harvest_lp_fees(ctx)
+    }
+
     // === Admin Operations ===
 
     /// Set up bond vault token account (one-time, after initialize).

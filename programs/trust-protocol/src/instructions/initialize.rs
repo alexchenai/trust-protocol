@@ -30,6 +30,11 @@ pub fn handler(ctx: Context<Initialize>, params: InitializeParams) -> Result<()>
     config.base_work_reward = 10_000_000; // 10 SWORN (in lamports, 1 SWORN = 1_000_000 lamports)
     config.halving_interval = 50_000;     // §11.3b: halving every 50,000 tasks
     config.max_work_rewards = 1_000_000_000_000; // 1M SWORN in lamports (1M * 1_000_000)
+    config.reserve_ratio_bps = 4000;      // 40% liquid reserve (§11.10)
+    config.lp_fee_staker_bps = 7000;      // 70% LP fees to stakers (§11.10)
+    config.bid_weight_price_bps = 3500;   // W_price = 0.35 (§6.5)
+    config.bid_weight_trust_bps = 4500;   // W_trust = 0.45 (§6.5)
+    config.bid_weight_speed_bps = 2000;   // W_speed = 0.20 (§6.5)
     config.bump = ctx.bumps.protocol_config;
 
     let pool = &mut ctx.accounts.insurance_pool;

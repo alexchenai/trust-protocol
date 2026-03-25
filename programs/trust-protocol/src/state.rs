@@ -368,6 +368,16 @@ pub struct ProtocolConfig {
     pub halving_interval: u64,
     /// Max automatic work rewards emittable (1_000_000 SWORN in lamports, §11.3b)
     pub max_work_rewards: u64,
+    /// SBLP reserve ratio in bps (4000 = 40%, Whitepaper §11.10)
+    pub reserve_ratio_bps: u16,
+    /// SBLP LP fee share to stakers in bps (7000 = 70%, Whitepaper §11.10)
+    pub lp_fee_staker_bps: u16,
+    /// Bid weight for price factor (3500 = 0.35, Whitepaper §6.5)
+    pub bid_weight_price_bps: u16,
+    /// Bid weight for trust factor (4500 = 0.45, Whitepaper §6.5)
+    pub bid_weight_trust_bps: u16,
+    /// Bid weight for speed factor (2000 = 0.20, Whitepaper §6.5)
+    pub bid_weight_speed_bps: u16,
     /// Bump seed
     pub bump: u8,
 }
@@ -387,6 +397,58 @@ pub struct VoteRecord {
     pub vote_for_provider: bool,
     /// Unix timestamp when vote was cast
     pub voted_at: i64,
+    /// Bump seed
+    pub bump: u8,
+}
+
+/// Bid on a public contract (Whitepaper §6.5: Public Contract Bidding)
+/// Seeds: [b"bid", contract_key, bidder_key]
+#[account]
+#[derive(InitSpace)]
+pub struct Bid {
+    /// Sequential bid ID (per contract, monotonically increasing)
+    pub bid_id: u64,
+    /// Contract (task) this bid is for
+    pub task_id: Pubkey,
+    /// Bidder agent identity PDA (DID reference)
+    pub bidder: Pubkey,
+    /// Proposed price in SWORN/SOL lamports (must be <= escrow_amount)
+    pub proposed_price: u64,
+    /// Proposed deadline in hours
+    pub proposed_deadline: u64,
+    /// Bidder TrustScore snapshotted at bid time
+    pub bidder_ts: u16,
+    /// Stake offered by bidder (>= required stake for their TrustScore)
+    pub stake_offered: u64,
+    /// SHA-256 hash of bid message/proposal
+    pub message_hash: [u8; 32],
+    /// Timestamp of bid submission
+    pub timestamp: i64,
+    /// Computed bid_score (scaled by 10000 for precision, Whitepaper §6.5)
+    pub bid_score: u64,
+    /// Whether bid is active (false = withdrawn)
+    pub active: bool,
+    /// Bump seed
+    pub bump: u8,
+}
+
+/// Staking-Based Liquidity Pool manager (Whitepaper §11.10: SBLP)
+/// Seeds: [b"stake-manager", agent_key]
+#[account]
+#[derive(InitSpace)]
+pub struct StakeManager {
+    /// Agent who owns this stake position
+    pub agent: Pubkey,
+    /// Total SWORN staked by this agent
+    pub total_staked: u64,
+    /// Liquid reserve portion (reserve_ratio * total_staked)
+    pub liquid_reserve: u64,
+    /// LP allocation portion ((1-reserve_ratio) * total_staked)
+    pub lp_allocation: u64,
+    /// Total LP fees earned (claimable)
+    pub lp_fees_earned: u64,
+    /// Timestamp of last fee harvest
+    pub last_fee_harvest: i64,
     /// Bump seed
     pub bump: u8,
 }
