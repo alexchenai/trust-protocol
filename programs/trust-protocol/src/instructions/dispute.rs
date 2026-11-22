@@ -1,6 +1,7 @@
 use crate::errors::TrustError;
 use crate::state::*;
 use anchor_lang::prelude::*;
+use anchor_lang::system_program;
 use anchor_spl::token::{self, Burn, Token, Transfer};
 use anchor_lang::solana_program::pubkey::Pubkey;
 
@@ -185,16 +186,25 @@ pub fn handler_escalate_to_appeal(ctx: Context<EscalateToAppeal>) -> Result<()> 
     let contract_id_bytes = contract.id.to_le_bytes();
 
     if is_sol {
-        // SOL: add lamports from escalator to contract PDA (program-owned, holds SOL escrow)
+        // SOL: move lamports from escalator to contract PDA (program-owned, holds SOL escrow).
+        // The escalator is a system-owned wallet, so this program cannot debit it directly;
+        // the transfer has to go through the System Program.
         let escalator_info = ctx.accounts.escalator.to_account_info();
         let contract_info = ctx.accounts.contract.to_account_info();
-        let escalator_lamports = escalator_info.lamports();
         require!(
-            escalator_lamports >= appeal_stake_amount,
+            escalator_info.lamports() >= appeal_stake_amount,
             TrustError::InsufficientStake
         );
-        **escalator_info.try_borrow_mut_lamports()? -= appeal_stake_amount;
-        **contract_info.try_borrow_mut_lamports()? += appeal_stake_amount;
+        system_program::transfer(
+            CpiContext::new(
+                ctx.accounts.system_program.to_account_info(),
+                system_program::Transfer {
+                    from: escalator_info,
+                    to: contract_info,
+                },
+            ),
+            appeal_stake_amount,
+        )?;
     } else {
         // SWORN: transfer from escalator's ATA to contract escrow vault
         let (expected_escrow, _) = Pubkey::find_program_address(
